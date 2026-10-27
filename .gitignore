@@ -1,0 +1,18 @@
+# Secrets — never commit
+.env
+
+# Local state (proposal/decision ledger, CRM snapshots)
+data/
+*.db
+*.sqlite
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
