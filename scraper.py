@@ -84,7 +84,7 @@ def parse_detail(html: str, url: str) -> Location:
         slug=urlparse(url).path.rsplit("/", 1)[-1],
         name=h1.get_text(" ", strip=True),
         street=", ".join(address_lines[:-1]),
-        city=city_match["city"],
+        city=city_match["city"].strip(),
         state=city_match["state"],
         zip=city_match["zip"],
         care_offerings=tuple(b.get_text(strip=True) for b in care.select(".badge")) if care else (),
