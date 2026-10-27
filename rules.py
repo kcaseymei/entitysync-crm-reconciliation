@@ -22,6 +22,7 @@ from matcher import Candidate, LocationMatch, normalize_street
 from scraper import Location
 
 NEW_ACCOUNT_REF = "@new"  # placeholder for the id a create operation will return
+WEAK_SURVIVOR_FLAG = "survivor chosen on weak signals only (no billing-history or parent difference); reviewer should confirm which copy to keep"
 
 CARE_TYPE_FOR_OFFERING = {
     "Short-Term Rehabilitation & Nursing": "Skilled Nursing",
@@ -77,29 +78,34 @@ def is_superseded(account: dict) -> bool:
     return bool(account["duplicate_of_account"] or account["chow_current_account"])
 
 
-def choose_survivor(candidates: list[Candidate], location: Location, parent_id: str) -> tuple[Candidate | None, str]:
+def choose_survivor(candidates: list[Candidate], location: Location, parent_id: str) -> tuple[Candidate | None, str, bool]:
+    """Return (survivor, reason, weak). weak=True when only soft signals separated the top two copies."""
     live = [c for c in candidates if not is_superseded(c.account)]
     if not live:
-        return None, "every matching account is already marked duplicate or CHOW-superseded"
+        return None, "every matching account is already marked duplicate or CHOW-superseded", False
     with_history = [c for c in live if money(c.account["lifetime_revenue"]) > 0]
     if len(with_history) > 1:
-        return None, "more than one copy has billing history; a human must pick the survivor"
+        return None, "more than one copy has billing history; a human must pick the survivor", False
+
+    def hard_evidence(c: Candidate) -> tuple[bool, bool]:
+        return money(c.account["lifetime_revenue"]) > 0, c.account["parent_id"] == parent_id
+
     ranked = sorted(live, key=lambda c: (
-        -(money(c.account["lifetime_revenue"]) > 0),      # 1. keep billing history
-        -(c.account["parent_id"] == parent_id),           # 2. already under the right parent
+        tuple(-x for x in hard_evidence(c)),              # 1. billing history, 2. already under the right parent
         -c.name_score,                                    # 3. name closest to the website
         -(c.account["billing_street"] == location.street),  # 4. address formatted like the website
         -(c.account["status"] == "Active"),
         c.account["account_id"],                          # 5. deterministic tie-break
     ))
     winner = ranked[0]
+    weak = len(ranked) > 1 and hard_evidence(ranked[0]) == hard_evidence(ranked[1])
     reasons = []
     if money(winner.account["lifetime_revenue"]) > 0:
         reasons.append("only copy with billing history")
     if winner.account["parent_id"] == parent_id:
         reasons.append("already under the correct parent")
     reasons.append(f"name similarity {winner.name_score}")
-    return winner, ", ".join(reasons)
+    return winner, ", ".join(reasons), weak
 
 
 def build_plan(matches: list[LocationMatch], orphans: list[dict], parent_id: str, parent_name: str) -> ReconciliationPlan:
@@ -119,7 +125,7 @@ def build_plan(matches: list[LocationMatch], orphans: list[dict], parent_id: str
 
 def _proposals_for_match(m: LocationMatch, parent_id: str, parent_name: str) -> list[Proposal]:
     loc = m.location
-    survivor, why = choose_survivor(m.candidates, loc, parent_id)
+    survivor, why, weak = choose_survivor(m.candidates, loc, parent_id)
     live = [c for c in m.candidates if not is_superseded(c.account)]
     evidence = [e for c in m.candidates for e in (f"[{c.account['account_id']}] {e}" for e in c.evidence)]
 
@@ -128,12 +134,15 @@ def _proposals_for_match(m: LocationMatch, parent_id: str, parent_name: str) -> 
             return []  # nothing live, or already flagged for a human on an earlier run
         return [_ambiguous_proposal(loc, live, why, evidence)]
 
-    out = [_duplicate_proposal(loser, survivor, loc) for loser in live if loser is not survivor]
+    confidence = "low" if weak else m.confidence
+    out = [_duplicate_proposal(loser, survivor, loc, weak) for loser in live if loser is not survivor]
     acct = survivor.account
     flags = [f"survivor chosen among {len(live)} copies: {why}"] if len(live) > 1 else []
+    if weak:
+        flags.append(WEAK_SURVIVOR_FLAG)
 
     if acct["parent_id"] != parent_id and requires_chow(acct):
-        out.append(_chow_proposal(loc, acct, parent_id, parent_name, evidence, m.confidence, flags))
+        out.append(_chow_proposal(loc, acct, parent_id, parent_name, evidence, confidence, flags))
         return out
 
     changes = _field_changes(loc, acct, parent_id)
@@ -153,7 +162,7 @@ def _proposals_for_match(m: LocationMatch, parent_id: str, parent_name: str) -> 
             before={k: acct[k] for k in changes} | ({"parent_name": acct["parent_name"]} if "parent_id" in changes else {}),
             after=changes | ({"parent_name": parent_name} if "parent_id" in changes else {}),
             evidence=evidence + (_money_evidence(acct, "direct re-parent allowed") if "parent_id" in changes else []),
-            confidence=m.confidence,
+            confidence=confidence,
             flags=flags,
             location=loc,
             account=acct,
@@ -222,7 +231,7 @@ def _chow_proposal(loc, acct, parent_id, parent_name, evidence, confidence, flag
     )
 
 
-def _duplicate_proposal(loser: Candidate, survivor: Candidate, loc: Location) -> Proposal:
+def _duplicate_proposal(loser: Candidate, survivor: Candidate, loc: Location, weak: bool) -> Proposal:
     acct, keep = loser.account, survivor.account
     fields = {
         "duplicate_of_account": keep["account_id"],
@@ -238,7 +247,8 @@ def _duplicate_proposal(loser: Candidate, survivor: Candidate, loc: Location) ->
         after={"duplicate_of_account": keep["account_id"], "status": "Inactive"},
         evidence=[f"same facility as survivor {keep['account_id']} '{keep['name']}'", *loser.evidence,
                   *_money_evidence(acct, "no billing history on the losing copy")],
-        confidence="high" if loser.basis == "street+zip" else "medium",
+        confidence="low" if weak else ("high" if loser.basis == "street+zip" else "medium"),
+        flags=[WEAK_SURVIVOR_FLAG] if weak else [],
         location=loc,
         account=acct,
     )

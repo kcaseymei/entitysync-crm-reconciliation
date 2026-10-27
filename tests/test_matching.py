@@ -1,7 +1,7 @@
 """Matching tests. Each one mirrors a real situation found in the sandbox data."""
 from factories import OTHER_PARENT_ID, PARENT_ID, PARENT_NAME, account, location
 from matcher import match_all, match_location, normalize_name, normalize_street
-from rules import build_plan
+from rules import WEAK_SURVIVOR_FLAG, build_plan
 
 
 def plan_for(locations, accounts):
@@ -95,6 +95,26 @@ def test_survivor_prefers_billing_history_over_parent():
     dup = next(p for p in plan.proposals if p.kind == "DUPLICATE")
     assert dup.subject == "account:A1"
     assert dup.operations[0].fields["duplicate_of_account"] == "A2"
+
+
+def test_survivor_picked_only_by_soft_signals_is_low_confidence():  # Kettering
+    loc = location("Bellhaven of Kettering", "3313 Wilmington Pike", "Kettering", zip="45429")
+    plan = plan_for([loc], [
+        account("A1", "Kettering Care Centre", "3313 Wilmington Pike", "Kettering", zip="45429", parent_id="P_HARBOR"),
+        account("A2", "Kettering Senior Campus", "3313 Wilmington Pk", "Kettering", zip="45429", parent_id=OTHER_PARENT_ID),
+    ])
+    assert plan.proposals and all(p.confidence == "low" for p in plan.proposals)
+    assert all(WEAK_SURVIVOR_FLAG in p.flags for p in plan.proposals)
+
+
+def test_survivor_picked_by_hard_evidence_is_not_flagged_weak():  # Monroe
+    loc = location("Bellhaven Gardens of Monroe", "750 Stewart Rd", "Monroe", "MI", "48162")
+    plan = plan_for([loc], [
+        account("A1", "Bellhaven Gardens of Monroe", "750 Stewart Rd", "Monroe", "MI", "48162"),
+        account("A2", "Cedar Trail of Monroe", "750 Stewart Road", "Monroe", "MI", "48162", parent_id=OTHER_PARENT_ID),
+    ])
+    [p] = plan.proposals
+    assert p.confidence == "high" and WEAK_SURVIVOR_FLAG not in p.flags
 
 
 def test_two_copies_with_billing_history_go_to_human_review():
