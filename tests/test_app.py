@@ -81,7 +81,7 @@ def test_chow_card_shows_old_and_new_account_in_one_table(tmp_path, monkeypatch)
     text = render(tmp_path, monkeypatch, [loc], [old])
     assert "CHOW · Bellhaven of Tiffin" in text
     assert "Old account · stays as it is" in text and "New account · will be created" in text
-    assert "| OLD9 | assigned by the CRM on create |" in text
+    assert "| OLD9 | :gray[assigned by the CRM on create] |" in text
     assert f"| parent_id | {OTHER_PARENT_ID} | **{PARENT_ID}** ✏️ |" in text
     assert "$84,000" in text and "(unchanged)" not in text
 
@@ -131,7 +131,7 @@ def test_applied_chow_shows_real_new_account_id(chow_app):
     at.radio(key="status-filter").set_value("applied").run()
     text = page_text(at)
     assert "New account · created" in text
-    assert "| account_id | OLD9 | **NEW1** ✏️ |" in text
+    assert "| account_id | OLD9 | :gray[NEW1] |" in text
     assert "→ **NEW1** ✏️" in text
 
 
@@ -198,8 +198,8 @@ def test_create_card_shows_one_table_without_an_empty_crm_column(tmp_path, monke
     text = render(tmp_path, monkeypatch, [loc], [])
     assert "Create · Bellhaven at Union Square" in text
     assert "New account · will be created" in text
-    assert f"| parent_name | {PARENT_NAME} |" in text
-    assert f"| parent_id | {PARENT_ID} |" in text
+    assert f"| parent_name | :gray[{PARENT_NAME}] |" in text
+    assert f"| parent_id | **{PARENT_ID}** ✏️ |" in text
     assert "CRM account(s) as reviewed" not in text
 
 
@@ -225,39 +225,15 @@ def test_duplicate_card_shows_where_the_kept_copy_ends_up(tmp_path, monkeypatch)
     assert "Kept copy (survivor) · now → after its own proposal" in text
     # name decided the survivor (⚖️) and is also renamed by the kept copy's own proposal (→)
     assert "| **name** ⚖️ | **Kettering Senior Campus** | Kettering Senior Campus | " \
-           "**Kettering Care Centre** → **Bellhaven of Kettering** ✏️ |" in text
-    assert f"→ **{PARENT_ID}** ✏️" in text
+           "**Kettering Care Centre** → :gray[Bellhaven of Kettering] |" in text
+    assert f"→ :gray[{PARENT_ID}]" in text
     assert "approve both so the kept copy ends up matching the website" in text
 
 
-# ---- written vs display only, and where each value comes from ---------------------------------
-
-def test_update_rows_say_what_is_written_and_where_it_comes_from(setup):  # Lima re-parent
+def test_written_values_are_marked_and_display_only_values_are_gray(setup):  # Lima re-parent
     text = page_text(setup[0])
-    assert f"| parent_id | {OTHER_PARENT_ID} | **{PARENT_ID}** ✏️ | ✍️ written · Bellhaven Senior Living parent " \
-           "account id (found by name in the CRM) |" in text
-    assert "| parent_name | " in text and "👁 display only · CRM shows the name of the parent_id |" in text
+    assert f"| parent_id | {OTHER_PARENT_ID} | **{PARENT_ID}** ✏️ |" in text
+    assert f"| parent_name | Cedar Trail Communities (Parent Account) | :gray[{PARENT_NAME}] |" in text
     assert "| note | — | **+ EntitySync: synced to website listing" in text
-    assert "✍️ written · EntitySync audit line, appended; the existing note is kept |" in text
-
-
-def test_chow_rows_say_which_account_is_written(chow_app):
-    text = page_text(chow_app[0])
-    assert "✍️ written to old account · CHOW rule: revenue > 0 AND open AR > 0" in text
-    assert "| billing_street | 45 St Lawrence Dr | 45 St Lawrence Dr | ✍️ written to new account · website listing: address |" in text
-    assert "👁 display only · a new account starts with no billing history" in text
-    assert "(not touched)" in text  # the old account's note
-
-
-def test_create_and_duplicate_rows_are_labelled(tmp_path, monkeypatch):
-    create = render(tmp_path, monkeypatch, [location("Bellhaven of Batavia", "2000 Hospital Dr", "Batavia", zip="45103")], [])
-    assert "| name | Bellhaven of Batavia | ✍️ written · website listing: facility name |" in create
-    assert "| account_id | assigned by the CRM on create | 👁 display only · the CRM assigns the id on create |" in create
-
-    loc = location("Bellhaven of Kettering", "3313 Wilmington Pike", "Kettering", zip="45429")
-    dup = render(tmp_path / "d", monkeypatch, [loc], [
-        account("KEEP", "Kettering Care Centre", "3313 Wilmington Pike", "Kettering", zip="45429", parent_id="P_HARBOR"),
-        account("DUP", "Kettering Senior Campus", "3313 Wilmington Pk", "Kettering", zip="45429", parent_id=OTHER_PARENT_ID)])
-    assert "✍️ written to this copy · duplicate rule: the losing copy becomes Inactive" in dup
-    assert "✍️ written to this copy · kept copy's account id (survivor rule: decided by: name similarity" in dup
-    assert "👁 display only here · the kept copy's own proposal writes it" in dup
+    assert "✏️ written to CRM · gray = shown only, not written" in text
+    assert "written? · source" not in text

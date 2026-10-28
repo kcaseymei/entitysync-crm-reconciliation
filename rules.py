@@ -56,7 +56,6 @@ class Proposal:
     related: list[str] = field(default_factory=list)  # other account ids shown for context (e.g. the survivor)
     highlight: list[str] = field(default_factory=list)  # account fields that decided the outcome, for display
     context_changes: dict = field(default_factory=dict)  # what the related account's own proposal will change
-    sources: dict = field(default_factory=dict)  # field -> where its proposed value comes from, for the reviewer
 
 
 @dataclass
@@ -191,7 +190,6 @@ def _proposals_for_match(m: LocationMatch, parent_id: str, parent_name: str) -> 
             location=loc,
             account=acct,
             related=loser_ids,
-            sources=_sources(loc, parent_name),
         ))
     return out
 
@@ -204,23 +202,6 @@ def _survivor_plan(loc: Location, acct: dict, parent_id: str, parent_name: str) 
     if "parent_id" in changes:
         changes["parent_name"] = parent_name
     return changes
-
-
-def _sources(loc: Location | None, parent_name: str, **overrides: str) -> dict:
-    """Where each proposed value comes from, in words a reviewer can check."""
-    offering = next((o for o in loc.care_offerings if o in CARE_TYPE_FOR_OFFERING), "") if loc else ""
-    address = "website listing: address"
-    return {
-        "name": "website listing: facility name",
-        "billing_street": address, "billing_city": address, "billing_state": address, "billing_zip": address,
-        "phone": "website listing: phone",
-        "care_type": f"website care offering '{offering}' mapped to a CRM care type",
-        "parent_id": f"{short_parent(parent_name)} parent account id (found by name in the CRM)",
-        "parent_name": "CRM shows the name of the parent_id",
-        "status": "facility is listed on the website, so Active",
-        "note": "EntitySync audit line, appended; the existing note is kept",
-        **overrides,
-    }
 
 
 def _field_changes(loc: Location, acct: dict, parent_id: str) -> dict:
@@ -295,11 +276,6 @@ def _chow_proposal(loc, acct, parent_id, parent_name, evidence, confidence, flag
         location=loc,
         account=acct,
         related=related,
-        sources=_sources(
-            loc, parent_name,
-            status="new account for a facility listed on the website, so Active",
-            chow_current_account="CHOW rule: revenue > 0 AND open AR > 0, so the old account points to the new one",
-            note="EntitySync audit line on the new account; the old account's note is not touched"),
     )
 
 
@@ -332,8 +308,6 @@ def _duplicate_proposal(loser: Candidate, survivor: Candidate, loc: Location, we
         related=[keep["account_id"]],
         highlight=list(deciding),
         context_changes=survivor_plan,
-        sources=_sources(loc, "", duplicate_of_account=f"kept copy's account id (survivor rule: {why})",
-                         status="duplicate rule: the losing copy becomes Inactive"),
     )
 
 
@@ -351,8 +325,6 @@ def _create_proposal(loc: Location, parent_id: str, parent_name: str) -> Proposa
                   "no CRM account at this street + ZIP, street + city, or with this exact name in this city"],
         confidence="high",
         location=loc,
-        sources=_sources(loc, parent_name, status="new account for a facility listed on the website, so Active",
-                         note="EntitySync audit line on the new account"),
     )
 
 
@@ -375,8 +347,6 @@ def _orphan_proposal(acct: dict, parent_name: str) -> Proposal:
                   *_money_evidence(acct, "flag only; no parent change")],
         confidence="medium",
         account=acct,
-        sources=_sources(None, parent_name, status=(
-            "not listed on the website: flag for a human; absence alone doesn't justify moving or inactivating")),
     )
 
 
