@@ -54,6 +54,7 @@ class Proposal:
     account: dict | None = None
     summary: str = ""  # one plain sentence for the reviewer
     related: list[str] = field(default_factory=list)  # other account ids shown for context (e.g. the survivor)
+    highlight: list[str] = field(default_factory=list)  # account fields that decided the outcome, for display
 
 
 @dataclass
@@ -84,41 +85,45 @@ def is_superseded(account: dict) -> bool:
     return bool(account["duplicate_of_account"] or account["chow_current_account"])
 
 
-def choose_survivor(candidates: list[Candidate], location: Location, parent_id: str) -> tuple[Candidate | None, str, bool]:
-    """Return (survivor, reason, weak).
+def choose_survivor(candidates: list[Candidate], location: Location, parent_id: str
+                    ) -> tuple[Candidate | None, str, bool, tuple[str, ...]]:
+    """Return (survivor, reason, weak, deciding_fields).
 
     Copies are compared rule by rule, in order; the first rule where the top two differ decides. The reason names
     that rule, both values and the rules that tied. weak=True when no hard rule (billing history, parent) decided.
+    deciding_fields are the account fields that rule looks at, so the reviewer can see them highlighted.
     """
     live = [c for c in candidates if not is_superseded(c.account)]
     if not live:
-        return None, "every matching account is already marked duplicate or CHOW-superseded", False
+        return None, "every matching account is already marked duplicate or CHOW-superseded", False, ()
     with_history = [c for c in live if money(c.account["lifetime_revenue"]) > 0]
     if len(with_history) > 1:
-        return None, "more than one copy has billing history; a human must pick the survivor", False
+        return None, "more than one copy has billing history; a human must pick the survivor", False, ("lifetime_revenue",)
 
-    rules = [  # (label, value; higher wins, is hard evidence)
-        ("billing history", lambda c: money(c.account["lifetime_revenue"]) > 0, True),
-        ("already under the correct parent", lambda c: c.account["parent_id"] == parent_id, True),
-        ("name similarity to the website", lambda c: c.name_score, False),
-        ("address written exactly as on the website", lambda c: c.account["billing_street"] == location.street, False),
-        ("status Active", lambda c: c.account["status"] == "Active", False),
+    rules = [  # (label, value: higher wins, is hard evidence, account fields it looks at)
+        ("billing history", lambda c: money(c.account["lifetime_revenue"]) > 0, True, ("lifetime_revenue",)),
+        ("already under the correct parent", lambda c: c.account["parent_id"] == parent_id, True,
+         ("parent_name", "parent_id")),
+        ("name similarity to the website", lambda c: c.name_score, False, ("name",)),
+        ("address written exactly as on the website", lambda c: c.account["billing_street"] == location.street, False,
+         ("billing_street",)),
+        ("status Active", lambda c: c.account["status"] == "Active", False, ("status",)),
     ]
-    ranked = sorted(live, key=lambda c: (*(-value(c) for _, value, _ in rules), c.account["account_id"]))
+    ranked = sorted(live, key=lambda c: (*(-rule[1](c) for rule in rules), c.account["account_id"]))
     winner = ranked[0]
     if len(ranked) == 1:
-        return winner, "only live copy", False
+        return winner, "only live copy", False, ()
 
     runner_up = ranked[1]
     show = lambda v: ("yes" if v else "no") if isinstance(v, bool) else str(v)
-    for i, (label, value, hard) in enumerate(rules):
+    for i, (label, value, hard, fields) in enumerate(rules):
         if value(winner) != value(runner_up):
             tied = [r[0] for r in rules[:i]]
             reason = f"decided by: {label} ({show(value(winner))} vs {show(value(runner_up))})"
             if tied:
                 reason += f"; tied on: {', '.join(tied)}"
-            return winner, reason, not hard
-    return winner, f"identical on every rule ({', '.join(r[0] for r in rules)}); kept the lower account id", True
+            return winner, reason, not hard, fields
+    return winner, f"identical on every rule ({', '.join(r[0] for r in rules)}); kept the lower account id", True, ("account_id",)
 
 
 def build_plan(matches: list[LocationMatch], orphans: list[dict], parent_id: str, parent_name: str) -> ReconciliationPlan:
@@ -138,7 +143,7 @@ def build_plan(matches: list[LocationMatch], orphans: list[dict], parent_id: str
 
 def _proposals_for_match(m: LocationMatch, parent_id: str, parent_name: str) -> list[Proposal]:
     loc = m.location
-    survivor, why, weak = choose_survivor(m.candidates, loc, parent_id)
+    survivor, why, weak, deciding = choose_survivor(m.candidates, loc, parent_id)
     live = [c for c in m.candidates if not is_superseded(c.account)]
     evidence = [e for c in m.candidates for e in (f"[{c.account['account_id']}] {e}" for e in c.evidence)]
 
@@ -148,7 +153,7 @@ def _proposals_for_match(m: LocationMatch, parent_id: str, parent_name: str) -> 
         return [_ambiguous_proposal(loc, live, why, evidence)]
 
     confidence = "low" if weak else m.confidence
-    out = [_duplicate_proposal(loser, survivor, loc, weak, why) for loser in live if loser is not survivor]
+    out = [_duplicate_proposal(loser, survivor, loc, weak, why, deciding) for loser in live if loser is not survivor]
     loser_ids = [c.account["account_id"] for c in live if c is not survivor]
     acct = survivor.account
     flags = [f"survivor chosen among {len(live)} copies: {why}"] if len(live) > 1 else []
@@ -261,7 +266,8 @@ def _chow_proposal(loc, acct, parent_id, parent_name, evidence, confidence, flag
     )
 
 
-def _duplicate_proposal(loser: Candidate, survivor: Candidate, loc: Location, weak: bool, why: str) -> Proposal:
+def _duplicate_proposal(loser: Candidate, survivor: Candidate, loc: Location, weak: bool, why: str,
+                        deciding: tuple[str, ...]) -> Proposal:
     acct, keep = loser.account, survivor.account
     fields = {
         "duplicate_of_account": keep["account_id"],
@@ -285,6 +291,7 @@ def _duplicate_proposal(loser: Candidate, survivor: Candidate, loc: Location, we
         location=loc,
         account=acct,
         related=[keep["account_id"]],
+        highlight=list(deciding),
     )
 
 

@@ -125,13 +125,18 @@ def show_duplicate(payload: dict) -> None:
     [op] = payload["operations"]
     this = payload["snapshots"][op["account_id"]]
     kept = next(iter(payload["context"].values()), {})
+    deciding = set(payload.get("highlight", []))
     rows = []
     for f in ACCOUNT_FIELDS:
-        now = cell(f, this.get(f))
+        now, kept_value = cell(f, this.get(f)), cell(f, kept.get(f))
         after = changed(cell(f, op["fields"][f])) if f in op["fields"] else now
-        rows.append([f, now, after, cell(f, kept.get(f))])
+        if f in deciding:  # the rows that decided which copy is kept
+            rows.append([f"**{f}** ⚖️", f"**{now}**", after, f"**{kept_value}**"])
+        else:
+            rows.append([f, now, after, kept_value])
     md_table(["field", "This copy · now", "This copy · after", "Kept copy (survivor) · unchanged here"], rows)
-    st.caption("✏️ marks what changes. Only this copy is updated by this proposal.")
+    st.caption("⚖️ marks the deciding factor for which copy is kept. ✏️ marks what changes; "
+               "only this copy is updated by this proposal.")
 
 
 def show_result(result: dict | None) -> None:

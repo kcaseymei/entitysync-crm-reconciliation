@@ -95,6 +95,9 @@ def test_duplicate_card_shows_the_kept_copy(tmp_path, monkeypatch):
     assert "Kept copy (survivor)" in text
     assert "| account_id | DUP2 | DUP2 | KEEP1 |" in text
     assert "**KEEP1** ✏️" in text  # duplicate_of_account after
+    # identical except street formatting: that row decided the survivor and is marked
+    assert "| **billing_street** ⚖️ | **1120 West Main Street** | 1120 West Main Street | **1120 W Main St** |" in text
+    assert "| parent_id | " in text  # rows that did not decide stay plain
 
 
 @pytest.fixture
@@ -198,3 +201,14 @@ def test_create_card_shows_one_table_without_an_empty_crm_column(tmp_path, monke
     assert f"| parent_name | {PARENT_NAME} |" in text
     assert f"| parent_id | {PARENT_ID} |" in text
     assert "CRM account(s) as reviewed" not in text
+
+
+def test_duplicate_decided_by_parent_highlights_parent_rows(tmp_path, monkeypatch):  # Monroe
+    loc = location("Bellhaven Gardens of Monroe", "750 Stewart Rd", "Monroe", "MI", "48162")
+    accounts = [account("KEEP1", "Bellhaven Gardens of Monroe", "750 Stewart Rd", "Monroe", "MI", "48162"),
+                account("DUP2", "Cedar Trail of Monroe", "750 Stewart Road", "Monroe", "MI", "48162",
+                        parent_id=OTHER_PARENT_ID)]
+    text = render(tmp_path, monkeypatch, [loc], accounts)
+    assert f"| **parent_id** ⚖️ | **{OTHER_PARENT_ID}** |" in text
+    assert "| **parent_name** ⚖️ |" in text
+    assert "| billing_street | " in text  # address did not decide here
