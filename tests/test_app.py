@@ -228,3 +228,36 @@ def test_duplicate_card_shows_where_the_kept_copy_ends_up(tmp_path, monkeypatch)
            "**Kettering Care Centre** → **Bellhaven of Kettering** ✏️ |" in text
     assert f"→ **{PARENT_ID}** ✏️" in text
     assert "approve both so the kept copy ends up matching the website" in text
+
+
+# ---- written vs display only, and where each value comes from ---------------------------------
+
+def test_update_rows_say_what_is_written_and_where_it_comes_from(setup):  # Lima re-parent
+    text = page_text(setup[0])
+    assert f"| parent_id | {OTHER_PARENT_ID} | **{PARENT_ID}** ✏️ | ✍️ written · Bellhaven Senior Living parent " \
+           "account id (found by name in the CRM) |" in text
+    assert "| parent_name | " in text and "👁 display only · CRM shows the name of the parent_id |" in text
+    assert "| note | — | **+ EntitySync: synced to website listing" in text
+    assert "✍️ written · EntitySync audit line, appended; the existing note is kept |" in text
+
+
+def test_chow_rows_say_which_account_is_written(chow_app):
+    text = page_text(chow_app[0])
+    assert "✍️ written to old account · CHOW rule: revenue > 0 AND open AR > 0" in text
+    assert "| billing_street | 45 St Lawrence Dr | 45 St Lawrence Dr | ✍️ written to new account · website listing: address |" in text
+    assert "👁 display only · a new account starts with no billing history" in text
+    assert "(not touched)" in text  # the old account's note
+
+
+def test_create_and_duplicate_rows_are_labelled(tmp_path, monkeypatch):
+    create = render(tmp_path, monkeypatch, [location("Bellhaven of Batavia", "2000 Hospital Dr", "Batavia", zip="45103")], [])
+    assert "| name | Bellhaven of Batavia | ✍️ written · website listing: facility name |" in create
+    assert "| account_id | assigned by the CRM on create | 👁 display only · the CRM assigns the id on create |" in create
+
+    loc = location("Bellhaven of Kettering", "3313 Wilmington Pike", "Kettering", zip="45429")
+    dup = render(tmp_path / "d", monkeypatch, [loc], [
+        account("KEEP", "Kettering Care Centre", "3313 Wilmington Pike", "Kettering", zip="45429", parent_id="P_HARBOR"),
+        account("DUP", "Kettering Senior Campus", "3313 Wilmington Pk", "Kettering", zip="45429", parent_id=OTHER_PARENT_ID)])
+    assert "✍️ written to this copy · duplicate rule: the losing copy becomes Inactive" in dup
+    assert "✍️ written to this copy · kept copy's account id (survivor rule: decided by: name similarity" in dup
+    assert "👁 display only here · the kept copy's own proposal writes it" in dup

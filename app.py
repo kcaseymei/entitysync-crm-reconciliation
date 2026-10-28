@@ -76,10 +76,39 @@ def show_account(acct: dict) -> None:
     md_table(["field", "value"], [[f, cell(f, acct.get(f))] for f in ACCOUNT_FIELDS])
 
 
-def show_before_after(before: dict, after: dict) -> None:
+WRITTEN, DISPLAY = "✍️ written", "👁 display only"
+PROVENANCE = "written? · source"
+
+
+def provenance(field: str, written: bool, sources: dict, target: str = "") -> str:
+    """Whether a row is sent to the CRM (taken from the real operations) and where its value comes from."""
+    tag = f"{WRITTEN} to {target}" if written and target else (WRITTEN if written else DISPLAY)
+    src = sources.get(field, "")
+    return cell("", f"{tag} · {src}" if src else tag)
+
+
+def note_line(planned_note: str) -> str:
+    """The line EntitySync appends: the last line of the planned note."""
+    lines = (planned_note or "").strip().splitlines()
+    return "+ " + lines[-1] if lines else "—"
+
+
+def show_before_after(payload: dict) -> None:
+    before, after, ops = payload["before"], payload["after"], payload["operations"]
     keys = list(dict.fromkeys([*before, *after]))
-    md_table(["field", "before (CRM now)", "after (proposed)"],
-             [[k, cell(k, before.get(k)), changed(cell(k, after.get(k)))] for k in keys])
+    if len(ops) != 1:  # several accounts flagged at once: rows are account ids, not fields
+        md_table(["account", "before (CRM now)", "after (proposed)"],
+                 [[k, cell(k, before.get(k)), changed(cell(k, after.get(k)))] for k in keys])
+        return
+    [op] = ops
+    sources, written = payload.get("sources", {}), op["fields"]
+    rows = [[k, cell(k, before.get(k)), changed(cell(k, after.get(k))), provenance(k, k in written, sources)]
+            for k in keys if k != "note"]
+    if "note" in written:
+        current = payload["snapshots"].get(op["account_id"], {}).get("note")
+        rows.append(["note", cell("note", current), changed(cell("note", note_line(written["note"]))),
+                     provenance("note", True, sources)])
+    md_table(["field", "before (CRM now)", "after (proposed)", PROVENANCE], rows)
 
 
 def show_chow(payload: dict, result: dict | None) -> None:
@@ -89,19 +118,34 @@ def show_chow(payload: dict, result: dict | None) -> None:
     after = payload["after"]  # older payloads nest the new account under "new account"
     parent_name = after.get("new account parent") or after.get("new account", {}).get("parent_name") or new["parent_id"]
     created_id = (result or {}).get("created_account_id")
+    sources = payload.get("sources", {})
     new_values = {**new, "account_id": created_id or "assigned by the CRM on create", "parent_name": parent_name,
                   "lifetime_revenue": 0, "outstanding_ar": 0, "chow_current_account": "", "duplicate_of_account": ""}
+    display_only = {
+        "account_id": "the CRM assigns the id on create",
+        "lifetime_revenue": "a new account starts with no billing history",
+        "outstanding_ar": "a new account starts with no billing history",
+    }
     rows = []
     for f in ACCOUNT_FIELDS:
         old_cell = cell(f, old.get(f))
         if f == "chow_current_account":
             old_cell = f"{old_cell} → " + changed(created_id or "new account's id")
+            source = provenance(f, True, sources, "old account")
+        elif f in new:
+            source = provenance(f, True, sources, "new account")
+        elif f in display_only:
+            source = cell("", f"{DISPLAY} · {display_only[f]}")
+        else:
+            source = provenance(f, False, sources) if f in sources else ""
         new_cell = cell(f, new_values.get(f))
         if f in ("parent_name", "parent_id") or (f == "account_id" and created_id):
             new_cell = changed(new_cell)
-        rows.append([f, old_cell, new_cell])
+        rows.append([f, old_cell, new_cell, source])
+    rows.append(["note", cell("note", old.get("note")) + " (not touched)",
+                 changed(cell("note", note_line(new.get("note", "")))), provenance("note", True, sources, "new account")])
     md_table(["field", "Old account · stays as it is (billing history)",
-              "New account · created" if created_id else "New account · will be created"], rows)
+              "New account · created" if created_id else "New account · will be created", PROVENANCE], rows)
     st.caption("✏️ marks what changes. On the old account only chow_current_account is set; "
                "its parent, name, status, revenue and AR stay exactly as they are.")
 
@@ -110,13 +154,20 @@ def show_create(payload: dict, result: dict | None) -> None:
     """No CRM account exists yet, so there is nothing to compare against: show the account that will be created."""
     [op] = payload["operations"]
     created_id = (result or {}).get("created_account_id")
-    values = {**op["fields"], "account_id": created_id or "assigned by the CRM on create",
-              "parent_name": payload["after"].get("parent_name") or op["fields"]["parent_id"]}
+    sources, written = payload.get("sources", {}), op["fields"]
+    values = {**written, "account_id": created_id or "assigned by the CRM on create",
+              "parent_name": payload["after"].get("parent_name") or written["parent_id"]}
     fields = ["account_id", "name", "parent_name", "parent_id", "status", "billing_street", "billing_city", "billing_state",
               "billing_zip", "care_type", "phone"]
-    md_table(["field", "New account · created" if created_id else "New account · will be created"],
-             [[f, changed(cell(f, values.get(f))) if f == "account_id" and created_id else cell(f, values.get(f))]
-              for f in fields])
+    rows = []
+    for f in fields:
+        value = cell(f, values.get(f))
+        if f == "account_id":
+            rows.append([f, changed(value) if created_id else value, cell("", f"{DISPLAY} · the CRM assigns the id on create")])
+        else:
+            rows.append([f, value, provenance(f, f in written, sources)])
+    rows.append(["note", cell("note", note_line(written.get("note", ""))), provenance("note", True, sources)])
+    md_table(["field", "New account · created" if created_id else "New account · will be created", PROVENANCE], rows)
     st.caption("No CRM account matches this listing by street + ZIP, street + city, or exact name in the same city.")
 
 
@@ -127,19 +178,25 @@ def show_duplicate(payload: dict) -> None:
     kept = next(iter(payload["context"].values()), {})
     deciding = set(payload.get("highlight", []))
     kept_plan = payload.get("context_changes", {})
+    sources, written = payload.get("sources", {}), op["fields"]
     rows = []
     for f in ACCOUNT_FIELDS:
         now, kept_value = cell(f, this.get(f)), cell(f, kept.get(f))
-        after = changed(cell(f, op["fields"][f])) if f in op["fields"] else now
+        after = changed(cell(f, written[f])) if f in written else now
         label = f
         if f in deciding:  # the rows that decided which copy is kept: bold the compared values
             label, now, kept_value = f"**{f}** ⚖️", f"**{now}**", f"**{kept_value}**"
+        source = provenance(f, True, sources, "this copy") if f in written else ""
         if f in kept_plan:  # changed by the kept copy's own proposal, not by this one
             kept_value = f"{kept_value} → {changed(cell(f, kept_plan[f]))}"
-        rows.append([label, now, after, kept_value])
+            source = source or cell("", f"{DISPLAY} here · the kept copy's own proposal writes it")
+        rows.append([label, now, after, kept_value, source])
+    if "note" in written:
+        rows.append(["note", cell("note", this.get("note")), changed(cell("note", note_line(written["note"]))),
+                     cell("note", kept.get("note")), provenance("note", True, sources, "this copy")])
     md_table(["field", "This copy · now", "This copy · after",
-              "Kept copy (survivor) · now → after its own proposal" if kept_plan else "Kept copy (survivor) · unchanged"],
-             rows)
+              "Kept copy (survivor) · now → after its own proposal" if kept_plan else "Kept copy (survivor) · unchanged",
+              PROVENANCE], rows)
     st.caption("⚖️ marks the deciding factor for which copy is kept. ✏️ marks what changes. This proposal only updates "
                "this copy; changes shown in the kept column come from the kept copy's own proposal.")
 
@@ -216,12 +273,9 @@ def card(p: dict) -> None:
         elif p["kind"] == "DUPLICATE" and payload.get("context"):
             show_duplicate(payload)
         else:
-            left, right = st.columns(2)
-            with left:
-                st.markdown("**Proposed change**")
-                show_before_after(payload["before"], payload["after"])
-            with right:
-                st.markdown("**CRM account(s) as reviewed**")
+            st.markdown("**Proposed change**")
+            show_before_after(payload)
+            with st.expander("CRM account(s) as reviewed · full record", expanded=True):
                 for acct in payload["snapshots"].values():
                     show_account(acct)
 

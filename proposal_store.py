@@ -202,4 +202,5 @@ def _payload(p: Proposal, accounts_by_id: dict[str, dict]) -> dict:
         "context": {aid: accounts_by_id[aid] for aid in p.related if aid in accounts_by_id},
         "highlight": p.highlight,
         "context_changes": p.context_changes,
+        "sources": p.sources,
     }
