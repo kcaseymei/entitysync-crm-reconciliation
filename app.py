@@ -10,6 +10,7 @@ is not shown again on later runs.
 from __future__ import annotations
 
 import os
+from datetime import datetime
 
 import streamlit as st
 
@@ -49,6 +50,11 @@ store = open_store()  # for drawing this run only; callbacks open their own
 
 def write_client() -> CRMClient:
     return CRMClient(allow_writes=True)
+
+
+def local_time(iso_utc: str) -> str:
+    """Stored as UTC; shown in the reviewer's local time."""
+    return datetime.fromisoformat(iso_utc).astimezone().strftime("%Y-%m-%d %H:%M %Z")
 
 
 def money(value) -> str:
@@ -228,8 +234,9 @@ def card(p: dict) -> None:
         st.markdown(f"#### {display_title(p)}")
         st.markdown(f":{STATUS_COLOR.get(p['status'], 'gray')}-badge[{p['status']}] · {p['kind']} · "
                     f"confidence **{p['confidence']}** · `{fp}`")
-        if p["decision_reason"]:
-            st.caption(f"Reviewer note: {p['decision_reason']}")
+        if p["decided_at"]:
+            reason = f" · reason: {p['decision_reason']}" if p["decision_reason"] else ""
+            st.caption(f"**{p['status'].capitalize()}** on {local_time(p['decided_at'])}{reason}")
         st.markdown(payload.get("summary") or KIND_HELP.get(p["kind"], ""))
         for flag in payload["flags"]:
             st.warning(flag)

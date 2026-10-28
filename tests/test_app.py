@@ -1,5 +1,6 @@
 """Review app tests: run the real Streamlit script headlessly against a temp DB and a fake CRM."""
 import json
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -237,3 +238,14 @@ def test_written_values_are_marked_and_display_only_values_are_gray(setup):  # L
     assert "| note | — | **+ EntitySync: synced to website listing" in text
     assert "✏️ written to CRM · gray = shown only, not written" in text
     assert "written? · source" not in text
+
+
+def test_decided_card_shows_when_and_why(chow_app):
+    at, store, fp = chow_app
+    at.text_input(key=f"reason-{fp}").input("needs billing confirmation").run()
+    at.button(key=f"reject-{fp}").click().run()
+    at.radio(key="status-filter").set_value("rejected").run()
+    text = page_text(at)
+    decided = datetime.fromisoformat(store.get(fp)["decided_at"]).astimezone().strftime("%Y-%m-%d %H:%M")
+    assert f"**Rejected** on {decided}" in text  # local time
+    assert "reason: needs billing confirmation" in text
