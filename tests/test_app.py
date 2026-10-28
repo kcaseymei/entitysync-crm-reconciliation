@@ -212,3 +212,19 @@ def test_duplicate_decided_by_parent_highlights_parent_rows(tmp_path, monkeypatc
     assert f"| **parent_id** ⚖️ | **{OTHER_PARENT_ID}** |" in text
     assert "| **parent_name** ⚖️ |" in text
     assert "| billing_street | " in text  # address did not decide here
+
+
+def test_duplicate_card_shows_where_the_kept_copy_ends_up(tmp_path, monkeypatch):  # Kettering
+    loc = location("Bellhaven of Kettering", "3313 Wilmington Pike", "Kettering", zip="45429")
+    accounts = [account("KEEP", "Kettering Care Centre", "3313 Wilmington Pike", "Kettering", zip="45429",
+                        parent_id="P_HARBOR"),
+                account("DUP", "Kettering Senior Campus", "3313 Wilmington Pk", "Kettering", zip="45429",
+                        parent_id=OTHER_PARENT_ID)]
+    text = render(tmp_path, monkeypatch, [loc], accounts)
+    assert "Duplicate · Kettering Senior Campus" in text  # titled by the copy being retired
+    assert "Kept copy (survivor) · now → after its own proposal" in text
+    # name decided the survivor (⚖️) and is also renamed by the kept copy's own proposal (→)
+    assert "| **name** ⚖️ | **Kettering Senior Campus** | Kettering Senior Campus | " \
+           "**Kettering Care Centre** → **Bellhaven of Kettering** ✏️ |" in text
+    assert f"→ **{PARENT_ID}** ✏️" in text
+    assert "approve both so the kept copy ends up matching the website" in text

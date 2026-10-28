@@ -126,17 +126,22 @@ def show_duplicate(payload: dict) -> None:
     this = payload["snapshots"][op["account_id"]]
     kept = next(iter(payload["context"].values()), {})
     deciding = set(payload.get("highlight", []))
+    kept_plan = payload.get("context_changes", {})
     rows = []
     for f in ACCOUNT_FIELDS:
         now, kept_value = cell(f, this.get(f)), cell(f, kept.get(f))
         after = changed(cell(f, op["fields"][f])) if f in op["fields"] else now
-        if f in deciding:  # the rows that decided which copy is kept
-            rows.append([f"**{f}** ⚖️", f"**{now}**", after, f"**{kept_value}**"])
-        else:
-            rows.append([f, now, after, kept_value])
-    md_table(["field", "This copy · now", "This copy · after", "Kept copy (survivor) · unchanged here"], rows)
-    st.caption("⚖️ marks the deciding factor for which copy is kept. ✏️ marks what changes; "
-               "only this copy is updated by this proposal.")
+        label = f
+        if f in deciding:  # the rows that decided which copy is kept: bold the compared values
+            label, now, kept_value = f"**{f}** ⚖️", f"**{now}**", f"**{kept_value}**"
+        if f in kept_plan:  # changed by the kept copy's own proposal, not by this one
+            kept_value = f"{kept_value} → {changed(cell(f, kept_plan[f]))}"
+        rows.append([label, now, after, kept_value])
+    md_table(["field", "This copy · now", "This copy · after",
+              "Kept copy (survivor) · now → after its own proposal" if kept_plan else "Kept copy (survivor) · unchanged"],
+             rows)
+    st.caption("⚖️ marks the deciding factor for which copy is kept. ✏️ marks what changes. This proposal only updates "
+               "this copy; changes shown in the kept column come from the kept copy's own proposal.")
 
 
 def show_result(result: dict | None) -> None:
@@ -160,7 +165,10 @@ def show_result(result: dict | None) -> None:
 def display_title(p: dict) -> str:
     """Built at render time, so proposals stored in an older format still read the same way."""
     loc, snaps = p["payload"]["location"], list(p["payload"]["snapshots"].values())
-    name = loc["name"] if loc else (snaps[0]["name"] if snaps else p["title"])
+    if p["kind"] == "DUPLICATE" and snaps:  # name the copy being retired; several cards share one location
+        name = snaps[0]["name"]
+    else:
+        name = loc["name"] if loc else (snaps[0]["name"] if snaps else p["title"])
     return f"{KIND_LABEL.get(p['kind'], p['kind'])} · {name}"
 
 

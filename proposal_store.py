@@ -201,4 +201,5 @@ def _payload(p: Proposal, accounts_by_id: dict[str, dict]) -> dict:
         # Display-only context (e.g. the survivor of a duplicate); not checked or written by the applier.
         "context": {aid: accounts_by_id[aid] for aid in p.related if aid in accounts_by_id},
         "highlight": p.highlight,
+        "context_changes": p.context_changes,
     }

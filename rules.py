@@ -55,6 +55,7 @@ class Proposal:
     summary: str = ""  # one plain sentence for the reviewer
     related: list[str] = field(default_factory=list)  # other account ids shown for context (e.g. the survivor)
     highlight: list[str] = field(default_factory=list)  # account fields that decided the outcome, for display
+    context_changes: dict = field(default_factory=dict)  # what the related account's own proposal will change
 
 
 @dataclass
@@ -153,7 +154,9 @@ def _proposals_for_match(m: LocationMatch, parent_id: str, parent_name: str) -> 
         return [_ambiguous_proposal(loc, live, why, evidence)]
 
     confidence = "low" if weak else m.confidence
-    out = [_duplicate_proposal(loser, survivor, loc, weak, why, deciding) for loser in live if loser is not survivor]
+    survivor_plan = _survivor_plan(loc, survivor.account, parent_id, parent_name)
+    out = [_duplicate_proposal(loser, survivor, loc, weak, why, deciding, survivor_plan)
+           for loser in live if loser is not survivor]
     loser_ids = [c.account["account_id"] for c in live if c is not survivor]
     acct = survivor.account
     flags = [f"survivor chosen among {len(live)} copies: {why}"] if len(live) > 1 else []
@@ -189,6 +192,16 @@ def _proposals_for_match(m: LocationMatch, parent_id: str, parent_name: str) -> 
             related=loser_ids,
         ))
     return out
+
+
+def _survivor_plan(loc: Location, acct: dict, parent_id: str, parent_name: str) -> dict:
+    """What the kept copy's own proposal will change, so a duplicate card can show where the kept copy ends up."""
+    if acct["parent_id"] != parent_id and requires_chow(acct):
+        return {"chow_current_account": f"new account under {short_parent(parent_name)} (CHOW)"}
+    changes = _field_changes(loc, acct, parent_id)
+    if "parent_id" in changes:
+        changes["parent_name"] = parent_name
+    return changes
 
 
 def _field_changes(loc: Location, acct: dict, parent_id: str) -> dict:
@@ -267,7 +280,7 @@ def _chow_proposal(loc, acct, parent_id, parent_name, evidence, confidence, flag
 
 
 def _duplicate_proposal(loser: Candidate, survivor: Candidate, loc: Location, weak: bool, why: str,
-                        deciding: tuple[str, ...]) -> Proposal:
+                        deciding: tuple[str, ...], survivor_plan: dict) -> Proposal:
     acct, keep = loser.account, survivor.account
     fields = {
         "duplicate_of_account": keep["account_id"],
@@ -287,11 +300,14 @@ def _duplicate_proposal(loser: Candidate, survivor: Candidate, loc: Location, we
         evidence=[f"same facility as survivor {keep['account_id']} '{keep['name']}'", *loser.evidence,
                   *_money_evidence(acct, "no billing history on the losing copy")],
         confidence="low" if weak else ("high" if loser.basis == "street+zip" else "medium"),
-        flags=[f"{WEAK_SURVIVOR_FLAG} ({why})"] if weak else [],
+        flags=([f"{WEAK_SURVIVOR_FLAG} ({why})"] if weak else []) + (
+            [f"the kept copy is changed by its own proposal ({', '.join(k for k in survivor_plan if k != 'parent_name')}); "
+             "approve both so the kept copy ends up matching the website"] if survivor_plan else []),
         location=loc,
         account=acct,
         related=[keep["account_id"]],
         highlight=list(deciding),
+        context_changes=survivor_plan,
     )
 
 
