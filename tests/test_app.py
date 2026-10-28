@@ -82,6 +82,7 @@ def test_chow_card_shows_old_and_new_account_in_one_table(tmp_path, monkeypatch)
     assert "CHOW · Bellhaven of Tiffin" in text
     assert "Old account · stays as it is" in text and "New account · will be created" in text
     assert "| OLD9 | assigned by the CRM on create |" in text
+    assert f"| parent_id | {OTHER_PARENT_ID} | **{PARENT_ID}** ✏️ |" in text
     assert "$84,000" in text and "(unchanged)" not in text
 
 
@@ -195,4 +196,5 @@ def test_create_card_shows_one_table_without_an_empty_crm_column(tmp_path, monke
     assert "Create · Bellhaven at Union Square" in text
     assert "New account · will be created" in text
     assert f"| parent_name | {PARENT_NAME} |" in text
+    assert f"| parent_id | {PARENT_ID} |" in text
     assert "CRM account(s) as reviewed" not in text

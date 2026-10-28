@@ -30,7 +30,7 @@ KIND_HELP = {
     "CREATE": "Facility is on the website but has no CRM account",
     "NEEDS_REVIEW": "Flag for a human: not on the website, or the survivor can't be chosen safely",
 }
-ACCOUNT_FIELDS = ["account_id", "name", "parent_name", "status", "billing_street", "billing_city", "billing_state",
+ACCOUNT_FIELDS = ["account_id", "name", "parent_name", "parent_id", "status", "billing_street", "billing_city", "billing_state",
                   "billing_zip", "care_type", "lifetime_revenue", "outstanding_ar", "chow_current_account",
                   "duplicate_of_account"]
 
@@ -97,7 +97,7 @@ def show_chow(payload: dict, result: dict | None) -> None:
         if f == "chow_current_account":
             old_cell = f"{old_cell} → " + changed(created_id or "new account's id")
         new_cell = cell(f, new_values.get(f))
-        if f == "parent_name" or (f == "account_id" and created_id):
+        if f in ("parent_name", "parent_id") or (f == "account_id" and created_id):
             new_cell = changed(new_cell)
         rows.append([f, old_cell, new_cell])
     md_table(["field", "Old account · stays as it is (billing history)",
@@ -112,7 +112,7 @@ def show_create(payload: dict, result: dict | None) -> None:
     created_id = (result or {}).get("created_account_id")
     values = {**op["fields"], "account_id": created_id or "assigned by the CRM on create",
               "parent_name": payload["after"].get("parent_name") or op["fields"]["parent_id"]}
-    fields = ["account_id", "name", "parent_name", "status", "billing_street", "billing_city", "billing_state",
+    fields = ["account_id", "name", "parent_name", "parent_id", "status", "billing_street", "billing_city", "billing_state",
               "billing_zip", "care_type", "phone"]
     md_table(["field", "New account · created" if created_id else "New account · will be created"],
              [[f, changed(cell(f, values.get(f))) if f == "account_id" and created_id else cell(f, values.get(f))]
