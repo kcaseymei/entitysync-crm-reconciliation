@@ -106,6 +106,20 @@ def show_chow(payload: dict, result: dict | None) -> None:
                "its parent, name, status, revenue and AR stay exactly as they are.")
 
 
+def show_create(payload: dict, result: dict | None) -> None:
+    """No CRM account exists yet, so there is nothing to compare against: show the account that will be created."""
+    [op] = payload["operations"]
+    created_id = (result or {}).get("created_account_id")
+    values = {**op["fields"], "account_id": created_id or "assigned by the CRM on create",
+              "parent_name": payload["after"].get("parent_name") or op["fields"]["parent_id"]}
+    fields = ["account_id", "name", "parent_name", "status", "billing_street", "billing_city", "billing_state",
+              "billing_zip", "care_type", "phone"]
+    md_table(["field", "New account · created" if created_id else "New account · will be created"],
+             [[f, changed(cell(f, values.get(f))) if f == "account_id" and created_id else cell(f, values.get(f))]
+              for f in fields])
+    st.caption("No CRM account matches this listing by street + ZIP, street + city, or exact name in the same city.")
+
+
 def show_duplicate(payload: dict) -> None:
     """This copy (now / after) next to the copy that is kept."""
     [op] = payload["operations"]
@@ -184,6 +198,8 @@ def card(p: dict) -> None:
 
         if p["kind"] == "CHOW":
             show_chow(payload, p["result"])
+        elif p["kind"] == "CREATE":
+            show_create(payload, p["result"])
         elif p["kind"] == "DUPLICATE" and payload.get("context"):
             show_duplicate(payload)
         else:

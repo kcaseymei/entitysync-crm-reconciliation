@@ -187,3 +187,12 @@ def _try(fn, exc):
     except exc:
         return True
     return False
+
+
+def test_create_card_shows_one_table_without_an_empty_crm_column(tmp_path, monkeypatch):
+    loc = location("Bellhaven at Union Square", "118 Union Square Dr", "New Albany", zip="43054")
+    text = render(tmp_path, monkeypatch, [loc], [])
+    assert "Create · Bellhaven at Union Square" in text
+    assert "New account · will be created" in text
+    assert f"| parent_name | {PARENT_NAME} |" in text
+    assert "CRM account(s) as reviewed" not in text
