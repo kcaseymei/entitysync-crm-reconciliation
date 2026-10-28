@@ -19,3 +19,8 @@ __pycache__/
 
 # Private learning notes — never commit
 learning/
+
+# Demo recordings (large, contain CRM data) — never commit
+videos/
+*.mov
+*.mp4
