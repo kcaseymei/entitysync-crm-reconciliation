@@ -85,7 +85,11 @@ def is_superseded(account: dict) -> bool:
 
 
 def choose_survivor(candidates: list[Candidate], location: Location, parent_id: str) -> tuple[Candidate | None, str, bool]:
-    """Return (survivor, reason, weak). weak=True when only soft signals separated the top two copies."""
+    """Return (survivor, reason, weak).
+
+    Copies are compared rule by rule, in order; the first rule where the top two differ decides. The reason names
+    that rule, both values and the rules that tied. weak=True when no hard rule (billing history, parent) decided.
+    """
     live = [c for c in candidates if not is_superseded(c.account)]
     if not live:
         return None, "every matching account is already marked duplicate or CHOW-superseded", False
@@ -93,25 +97,28 @@ def choose_survivor(candidates: list[Candidate], location: Location, parent_id: 
     if len(with_history) > 1:
         return None, "more than one copy has billing history; a human must pick the survivor", False
 
-    def hard_evidence(c: Candidate) -> tuple[bool, bool]:
-        return money(c.account["lifetime_revenue"]) > 0, c.account["parent_id"] == parent_id
-
-    ranked = sorted(live, key=lambda c: (
-        tuple(-x for x in hard_evidence(c)),              # 1. billing history, 2. already under the right parent
-        -c.name_score,                                    # 3. name closest to the website
-        -(c.account["billing_street"] == location.street),  # 4. address formatted like the website
-        -(c.account["status"] == "Active"),
-        c.account["account_id"],                          # 5. deterministic tie-break
-    ))
+    rules = [  # (label, value; higher wins, is hard evidence)
+        ("billing history", lambda c: money(c.account["lifetime_revenue"]) > 0, True),
+        ("already under the correct parent", lambda c: c.account["parent_id"] == parent_id, True),
+        ("name similarity to the website", lambda c: c.name_score, False),
+        ("address written exactly as on the website", lambda c: c.account["billing_street"] == location.street, False),
+        ("status Active", lambda c: c.account["status"] == "Active", False),
+    ]
+    ranked = sorted(live, key=lambda c: (*(-value(c) for _, value, _ in rules), c.account["account_id"]))
     winner = ranked[0]
-    weak = len(ranked) > 1 and hard_evidence(ranked[0]) == hard_evidence(ranked[1])
-    reasons = []
-    if money(winner.account["lifetime_revenue"]) > 0:
-        reasons.append("only copy with billing history")
-    if winner.account["parent_id"] == parent_id:
-        reasons.append("already under the correct parent")
-    reasons.append(f"name similarity {winner.name_score}")
-    return winner, ", ".join(reasons), weak
+    if len(ranked) == 1:
+        return winner, "only live copy", False
+
+    runner_up = ranked[1]
+    show = lambda v: ("yes" if v else "no") if isinstance(v, bool) else str(v)
+    for i, (label, value, hard) in enumerate(rules):
+        if value(winner) != value(runner_up):
+            tied = [r[0] for r in rules[:i]]
+            reason = f"decided by: {label} ({show(value(winner))} vs {show(value(runner_up))})"
+            if tied:
+                reason += f"; tied on: {', '.join(tied)}"
+            return winner, reason, not hard
+    return winner, f"identical on every rule ({', '.join(r[0] for r in rules)}); kept the lower account id", True
 
 
 def build_plan(matches: list[LocationMatch], orphans: list[dict], parent_id: str, parent_name: str) -> ReconciliationPlan:
@@ -146,7 +153,7 @@ def _proposals_for_match(m: LocationMatch, parent_id: str, parent_name: str) -> 
     acct = survivor.account
     flags = [f"survivor chosen among {len(live)} copies: {why}"] if len(live) > 1 else []
     if weak:
-        flags.append(WEAK_SURVIVOR_FLAG)
+        flags.append(f"{WEAK_SURVIVOR_FLAG} ({why})")
 
     if acct["parent_id"] != parent_id and requires_chow(acct):
         out.append(_chow_proposal(loc, acct, parent_id, parent_name, evidence, confidence, flags, loser_ids))
@@ -274,7 +281,7 @@ def _duplicate_proposal(loser: Candidate, survivor: Candidate, loc: Location, we
         evidence=[f"same facility as survivor {keep['account_id']} '{keep['name']}'", *loser.evidence,
                   *_money_evidence(acct, "no billing history on the losing copy")],
         confidence="low" if weak else ("high" if loser.basis == "street+zip" else "medium"),
-        flags=[WEAK_SURVIVOR_FLAG] if weak else [],
+        flags=[f"{WEAK_SURVIVOR_FLAG} ({why})"] if weak else [],
         location=loc,
         account=acct,
         related=[keep["account_id"]],

@@ -104,7 +104,8 @@ def test_survivor_picked_only_by_soft_signals_is_low_confidence():  # Kettering
         account("A2", "Kettering Senior Campus", "3313 Wilmington Pk", "Kettering", zip="45429", parent_id=OTHER_PARENT_ID),
     ])
     assert plan.proposals and all(p.confidence == "low" for p in plan.proposals)
-    assert all(WEAK_SURVIVOR_FLAG in p.flags for p in plan.proposals)
+    assert all(any(WEAK_SURVIVOR_FLAG in f for f in p.flags) for p in plan.proposals)
+    assert all(any("decided by: name similarity to the website (60 vs 58)" in f for f in p.flags) for p in plan.proposals)
 
 
 def test_survivor_picked_by_hard_evidence_is_not_flagged_weak():  # Monroe
@@ -114,7 +115,8 @@ def test_survivor_picked_by_hard_evidence_is_not_flagged_weak():  # Monroe
         account("A2", "Cedar Trail of Monroe", "750 Stewart Road", "Monroe", "MI", "48162", parent_id=OTHER_PARENT_ID),
     ])
     [p] = plan.proposals
-    assert p.confidence == "high" and WEAK_SURVIVOR_FLAG not in p.flags
+    assert p.confidence == "high" and not any(WEAK_SURVIVOR_FLAG in f for f in p.flags)
+    assert "decided by: already under the correct parent (yes vs no); tied on: billing history" in p.title + " ".join(p.flags) + p.summary
 
 
 def test_two_copies_with_billing_history_go_to_human_review():
@@ -178,3 +180,13 @@ def test_orphans_under_other_parents_are_ignored():
 def test_one_location_one_candidate_lookup_is_exact_on_street_number():
     m = match_location(location("Bellhaven of X", "750 Stewart Rd"), [account("A1", "Other", "751 Stewart Rd")])
     assert m.candidates == []
+
+
+def test_reason_names_the_deciding_rule_and_the_tied_ones():  # Owosso
+    loc = location("Bellhaven of Owosso", "1120 W Main St", "Owosso", "MI", "48867")
+    plan = plan_for([loc], [account("KEEP", "Bellhaven of Owosso", "1120 W Main St", "Owosso", "MI", "48867"),
+                            account("DUP", "Bellhaven of Owosso", "1120 West Main Street", "Owosso", "MI", "48867")])
+    [p] = plan.proposals
+    assert p.subject == "account:DUP" and p.confidence == "low"
+    assert ("decided by: address written exactly as on the website (yes vs no); "
+            "tied on: billing history, already under the correct parent, name similarity to the website") in p.flags[0]
