@@ -1,0 +1,12 @@
+# EntitySync daily schedule (primary). Install with `crontab deploy/crontab` after editing the path.
+#
+# Runs on the same machine as the review app, so both share one decision ledger
+# (data/entitysync.db). That shared ledger is what keeps approved and rejected
+# proposals from coming back. The job only scrapes, reads the CRM and stores
+# proposals: it never approves anything and never writes to the CRM. If the scrape
+# is incomplete it exits non-zero without proposing anything; the log says why.
+#
+# CRON_TZ works with cronie / Vixie cron on Linux; macOS cron uses local time.
+CRON_TZ=America/New_York
+# m  h  dom mon dow  command
+  0  6  *   *   *    cd /opt/entitysync-crm-reconciliation && .venv/bin/python pipeline.py >> data/pipeline.log 2>&1

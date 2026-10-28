@@ -1,0 +1,82 @@
+# Daily proposal run on GitHub Actions (alternative to deploy/crontab).
+#
+# Generates proposals only: it never approves anything and never writes to the CRM.
+#
+# Persistence caveat: runners are ephemeral, so the SQLite decision ledger is carried
+# between runs with actions/cache. Reviewer decisions made in a local review app live
+# in that machine's ledger, not this one. For production, point both the review app
+# and this job at shared storage (e.g. a hosted Postgres). Even without a shared
+# ledger, applied changes are not re-proposed, because the CRM itself now matches the
+# website; only *rejected* proposals would reappear.
+name: Daily reconciliation (propose only)
+
+on:
+  schedule:
+    - cron: "0 11 * * *"  # 11:00 UTC = 06:00 / 07:00 US Eastern
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: entitysync-daily
+  cancel-in-progress: false
+
+jobs:
+  propose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - run: python -m pytest -q
+
+      - name: Check the CRM token secret
+        id: token
+        env:
+          CRM_API_TOKEN: ${{ secrets.CRM_API_TOKEN }}
+        run: |
+          if [ -z "$CRM_API_TOKEN" ]; then
+            echo "::notice::CRM_API_TOKEN secret is not set; skipping the pipeline run."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Restore decision ledger
+        if: steps.token.outputs.configured == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: data/entitysync.db
+          key: entitysync-ledger-${{ github.run_id }}
+          restore-keys: entitysync-ledger-
+
+      - name: Scrape, match and store proposals (read-only against the CRM)
+        if: steps.token.outputs.configured == 'true'
+        env:
+          CRM_API_TOKEN: ${{ secrets.CRM_API_TOKEN }}
+        run: python pipeline.py
+
+      - name: Save decision ledger
+        if: always() && steps.token.outputs.configured == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: data/entitysync.db
+          key: entitysync-ledger-${{ github.run_id }}
+
+      - name: Upload run output for review
+        if: always() && steps.token.outputs.configured == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: entitysync-run-${{ github.run_id }}
+          path: |
+            data/entitysync.db
+            data/locations.json
+          retention-days: 14
