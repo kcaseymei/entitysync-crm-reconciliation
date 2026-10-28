@@ -1,4 +1,5 @@
 """Review app tests: run the real Streamlit script headlessly against a temp DB and a fake CRM."""
+import json
 from pathlib import Path
 
 import pytest
@@ -80,7 +81,7 @@ def test_chow_card_shows_old_and_new_account_in_one_table(tmp_path, monkeypatch)
     text = render(tmp_path, monkeypatch, [loc], [old])
     assert "CHOW · Bellhaven of Tiffin" in text
     assert "Old account · stays as it is" in text and "New account · will be created" in text
-    assert "| OLD9 | assigned by the CRM |" in text
+    assert "| OLD9 | assigned by the CRM on create |" in text
     assert "$84,000" in text and "(unchanged)" not in text
 
 
@@ -93,3 +94,60 @@ def test_duplicate_card_shows_the_kept_copy(tmp_path, monkeypatch):
     assert "Kept copy (survivor)" in text
     assert "| account_id | DUP2 | DUP2 | KEEP1 |" in text
     assert "**KEEP1** ✏️" in text  # duplicate_of_account after
+
+
+@pytest.fixture
+def chow_app(tmp_path, monkeypatch):
+    loc = location("Bellhaven of Tiffin", "45 St Lawrence Dr", "Tiffin", zip="44883")
+    accounts = [account("OLD9", "Bellhaven of Tiffin", "45 St Lawrence Dr", "Tiffin", zip="44883",
+                        parent_id=OTHER_PARENT_ID, revenue=84000, ar=12400)]
+    db = tmp_path / "chow.db"
+    store = ProposalStore(db)
+    store.save_plan(build_plan(*match_all([loc], accounts, PARENT_ID), PARENT_ID, PARENT_NAME), accounts)
+    fake = FakeCRM(accounts)
+    monkeypatch.setenv("ENTITYSYNC_DB", str(db))
+    monkeypatch.setenv("CRM_API_TOKEN", "unused")
+    monkeypatch.setattr("crm_client.CRMClient", lambda **kwargs: fake)
+    at = AppTest.from_file(str(APP), default_timeout=10).run()
+    return at, store, store.list()[0]["fingerprint"]
+
+
+def test_status_changes_in_the_same_redraw_as_the_click(chow_app):
+    at, store, fp = chow_app
+    at.button(key=f"approve-{fp}").click().run()
+    assert not at.exception
+    assert "now **applied**" in page_text(at)  # confirmation at the top of the redrawn page
+    at.radio(key="status-filter").set_value("all").run()
+    assert ":green-badge[applied]" in page_text(at)
+
+
+def test_applied_chow_shows_real_new_account_id(chow_app):
+    at, _, fp = chow_app
+    at.button(key=f"approve-{fp}").click().run()
+    at.radio(key="status-filter").set_value("applied").run()
+    text = page_text(at)
+    assert "New account · created" in text
+    assert "| account_id | OLD9 | **NEW1** ✏️ |" in text
+    assert "→ **NEW1** ✏️" in text
+
+
+def test_reject_then_reopen_returns_to_pending(chow_app):
+    at, store, fp = chow_app
+    at.button(key=f"reject-{fp}").click().run()
+    assert store.get(fp)["status"] == "rejected"
+    at.radio(key="status-filter").set_value("rejected").run()
+    at.button(key=f"reopen-{fp}").click().run()
+    assert store.get(fp)["status"] == "pending"
+
+
+def test_decided_proposal_in_older_payload_format_still_renders(chow_app):
+    # Decided proposals keep the payload they were approved with; an older CHOW format nested the new account.
+    at, store, fp = chow_app
+    payload = store.get(fp)["payload"]
+    payload["after"] = {"old account": {}, "new account": {"parent_name": PARENT_NAME}}
+    store.db.execute("UPDATE proposals SET payload = ?, status = 'applied', result = ? WHERE fingerprint = ?",
+                     (json.dumps(payload), json.dumps({"created_account_id": "NEW7", "verified": True}), fp))
+    store.db.commit()
+    at.radio(key="status-filter").set_value("all").run()
+    assert not at.exception
+    assert "CHOW · Bellhaven of Tiffin" in page_text(at)

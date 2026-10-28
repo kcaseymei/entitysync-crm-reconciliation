@@ -149,6 +149,15 @@ class ProposalStore:
             self.db.execute("UPDATE proposals SET status = ?, decided_at = ?, decision_reason = ? WHERE fingerprint = ?",
                             (decision, now(), reason, fp))
 
+    def reopen(self, fp: str) -> None:
+        """Undo a rejection (e.g. a mis-click): back to pending. Nothing was written, so nothing to undo in the CRM."""
+        current = self.get(fp)["status"]
+        if current != "rejected":
+            raise ValueError(f"proposal {fp} is {current}; only rejected proposals can be reopened")
+        with self.db:
+            self.db.execute("UPDATE proposals SET status = 'pending', decided_at = NULL, decision_reason = NULL, result = NULL"
+                            " WHERE fingerprint = ?", (fp,))
+
     def set_status(self, fp: str, status: str, result: dict | None = None) -> None:
         with self.db:
             self.db.execute("UPDATE proposals SET status = ?, result = ? WHERE fingerprint = ?",

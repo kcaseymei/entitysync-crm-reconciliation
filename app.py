@@ -18,6 +18,10 @@ from crm_client import CRMClient
 from proposal_store import DEFAULT_DB_PATH, ProposalStore
 
 STATUSES = ["pending", "applied", "rejected", "failed", "stale", "superseded", "approved", "applying"]
+STATUS_COLOR = {"pending": "orange", "applied": "green", "rejected": "gray", "failed": "red", "stale": "red",
+                "superseded": "gray", "approved": "blue", "applying": "blue"}
+KIND_LABEL = {"UPDATE": "Update", "REPARENT": "Re-parent", "CHOW": "CHOW", "DUPLICATE": "Duplicate",
+              "CREATE": "Create", "NEEDS_REVIEW": "Needs review"}
 KIND_HELP = {
     "UPDATE": "Fix name or address on an account that is already under the right parent",
     "REPARENT": "Move the account to the correct parent (no billing history with open AR)",
@@ -69,22 +73,26 @@ def show_before_after(before: dict, after: dict) -> None:
              [[k, cell(k, before.get(k)), changed(cell(k, after.get(k)))] for k in keys])
 
 
-def show_chow(payload: dict) -> None:
-    """One table: the old account (kept for billing) next to the new account (to be created)."""
+def show_chow(payload: dict, result: dict | None) -> None:
+    """One table: the old account (kept for billing) next to the new account (to be created, or created)."""
     create, link = payload["operations"]
     old, new = payload["snapshots"][link["account_id"]], create["fields"]
-    new_values = {**new, "account_id": "assigned by the CRM", "parent_name": payload["after"]["new account parent"],
+    after = payload["after"]  # older payloads nest the new account under "new account"
+    parent_name = after.get("new account parent") or after.get("new account", {}).get("parent_name") or new["parent_id"]
+    created_id = (result or {}).get("created_account_id")
+    new_values = {**new, "account_id": created_id or "assigned by the CRM on create", "parent_name": parent_name,
                   "lifetime_revenue": 0, "outstanding_ar": 0, "chow_current_account": "", "duplicate_of_account": ""}
     rows = []
     for f in ACCOUNT_FIELDS:
         old_cell = cell(f, old.get(f))
         if f == "chow_current_account":
-            old_cell = f"{old_cell} → " + changed("new account's id")
+            old_cell = f"{old_cell} → " + changed(created_id or "new account's id")
         new_cell = cell(f, new_values.get(f))
-        if f == "parent_name":
+        if f == "parent_name" or (f == "account_id" and created_id):
             new_cell = changed(new_cell)
         rows.append([f, old_cell, new_cell])
-    md_table(["field", "Old account · stays as it is (billing history)", "New account · will be created"], rows)
+    md_table(["field", "Old account · stays as it is (billing history)",
+              "New account · created" if created_id else "New account · will be created"], rows)
     st.caption("✏️ marks what changes. On the old account only chow_current_account is set; "
                "its parent, name, status, revenue and AR stay exactly as they are.")
 
@@ -121,11 +129,41 @@ def show_result(result: dict | None) -> None:
         st.info(result["reason"])
 
 
+def display_title(p: dict) -> str:
+    """Built at render time, so proposals stored in an older format still read the same way."""
+    loc, snaps = p["payload"]["location"], list(p["payload"]["snapshots"].values())
+    name = loc["name"] if loc else (snaps[0]["name"] if snaps else p["title"])
+    return f"{KIND_LABEL.get(p['kind'], p['kind'])} · {name}"
+
+
+# Button callbacks run before the page is redrawn, so the card already shows its new status.
+def on_approve(fp: str) -> None:
+    result = approve_and_apply(store, write_client(), fp, st.session_state.get(f"reason-{fp}", ""))
+    st.session_state["flash"] = (fp, "approved", result)
+
+
+def on_reject(fp: str) -> None:
+    reject(store, fp, st.session_state.get(f"reason-{fp}", ""))
+    st.session_state["flash"] = (fp, "rejected", None)
+
+
+def on_retry(fp: str) -> None:
+    st.session_state["flash"] = (fp, "retried", apply_proposal(store, write_client(), fp))
+
+
+def on_reopen(fp: str) -> None:
+    store.reopen(fp)
+    st.session_state["flash"] = (fp, "reopened", None)
+
+
 def card(p: dict) -> None:
     payload, fp = p["payload"], p["fingerprint"]
     with st.container(border=True):
-        st.markdown(f"#### {p['title']}")
-        st.caption(f"{p['kind']} · confidence **{p['confidence']}** · status **{p['status']}** · `{fp}`")
+        st.markdown(f"#### {display_title(p)}")
+        st.markdown(f":{STATUS_COLOR.get(p['status'], 'gray')}-badge[{p['status']}] · {p['kind']} · "
+                    f"confidence **{p['confidence']}** · `{fp}`")
+        if p["decision_reason"]:
+            st.caption(f"Reviewer note: {p['decision_reason']}")
         st.markdown(payload.get("summary") or KIND_HELP.get(p["kind"], ""))
         for flag in payload["flags"]:
             st.warning(flag)
@@ -136,8 +174,8 @@ def card(p: dict) -> None:
             f"{', '.join(loc['care_offerings'])} · [listing]({loc['source_url']})" if loc else "_not listed_"))
 
         if p["kind"] == "CHOW":
-            show_chow(payload)
-        elif p["kind"] == "DUPLICATE":
+            show_chow(payload, p["result"])
+        elif p["kind"] == "DUPLICATE" and payload.get("context"):
             show_duplicate(payload)
         else:
             left, right = st.columns(2)
@@ -156,20 +194,14 @@ def card(p: dict) -> None:
 
         show_result(p["result"])
         if p["status"] == "pending":
-            reason = st.text_input("Reason (optional)", key=f"reason-{fp}")
+            st.text_input("Reason (optional)", key=f"reason-{fp}")
             approve_col, reject_col, _ = st.columns([1, 1, 4])
-            if approve_col.button("✅ Approve & apply", key=f"approve-{fp}", type="primary"):
-                with st.spinner("Re-checking, writing, verifying…"):
-                    approve_and_apply(store, write_client(), fp, reason)
-                st.rerun()
-            if reject_col.button("❌ Reject", key=f"reject-{fp}"):
-                reject(store, fp, reason)
-                st.rerun()
+            approve_col.button("✅ Approve & apply", key=f"approve-{fp}", type="primary", on_click=on_approve, args=(fp,))
+            reject_col.button("❌ Reject", key=f"reject-{fp}", on_click=on_reject, args=(fp,))
         elif p["status"] == "failed":
-            if st.button("↻ Retry", key=f"retry-{fp}"):
-                with st.spinner("Resuming…"):
-                    apply_proposal(store, write_client(), fp)
-                st.rerun()
+            st.button("↻ Retry", key=f"retry-{fp}", on_click=on_retry, args=(fp,))
+        elif p["status"] == "rejected":
+            st.button("↩ Reopen (back to pending; nothing was written)", key=f"reopen-{fp}", on_click=on_reopen, args=(fp,))
 
 
 proposals = store.list()
@@ -177,19 +209,27 @@ counts = {s: sum(p["status"] == s for p in proposals) for s in STATUSES}
 
 st.title("EntitySync review queue")
 st.caption("Bellhaven Senior Living · nothing is written to the CRM until you click Approve")
+if flash := st.session_state.pop("flash", None):
+    fp, action, result = flash
+    title = display_title(store.get(fp))
+    status = store.get(fp)["status"]
+    message = f"{title}: {action} → now **{status}**"
+    (st.success if status in ("applied", "rejected", "pending") else st.error)(message)
 metrics = st.columns(5)
 for col, s in zip(metrics, ["pending", "applied", "rejected", "failed", "stale"]):
     col.metric(s.capitalize(), counts[s])
 
 with st.sidebar:
     st.header("Filter")
-    status = st.radio("Status", [s for s in STATUSES if counts[s] or s == "pending"],
-                      format_func=lambda s: f"{s} ({counts[s]})", key="status-filter")
+    options = ["pending", "all"] + [s for s in STATUSES if counts[s] and s != "pending"]
+    status = st.radio("Status", options, key="status-filter",
+                      format_func=lambda s: f"all ({len(proposals)})" if s == "all" else f"{s} ({counts[s]})")
     kinds = sorted({p["kind"] for p in proposals})
     chosen_kinds = st.multiselect("Kind", kinds, default=kinds, key="kind-filter")
     chosen_conf = st.multiselect("Confidence", ["high", "medium", "low"], default=["high", "medium", "low"], key="conf-filter")
 
-shown = [p for p in proposals if p["status"] == status and p["kind"] in chosen_kinds and p["confidence"] in chosen_conf]
+shown = [p for p in proposals if status in ("all", p["status"]) and p["kind"] in chosen_kinds
+         and p["confidence"] in chosen_conf]
 if not shown:
     st.info("Nothing here.")
 for p in shown:
