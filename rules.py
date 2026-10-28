@@ -52,12 +52,18 @@ class Proposal:
     flags: list[str] = field(default_factory=list)
     location: Location | None = None
     account: dict | None = None
+    summary: str = ""  # one plain sentence for the reviewer
+    related: list[str] = field(default_factory=list)  # other account ids shown for context (e.g. the survivor)
 
 
 @dataclass
 class ReconciliationPlan:
     proposals: list[Proposal]
     unchanged: list[LocationMatch]
+
+
+def short_parent(name: str) -> str:
+    return name.removesuffix(" (Parent Account)") or "no parent"
 
 
 def money(value) -> float:
@@ -135,14 +141,15 @@ def _proposals_for_match(m: LocationMatch, parent_id: str, parent_name: str) -> 
         return [_ambiguous_proposal(loc, live, why, evidence)]
 
     confidence = "low" if weak else m.confidence
-    out = [_duplicate_proposal(loser, survivor, loc, weak) for loser in live if loser is not survivor]
+    out = [_duplicate_proposal(loser, survivor, loc, weak, why) for loser in live if loser is not survivor]
+    loser_ids = [c.account["account_id"] for c in live if c is not survivor]
     acct = survivor.account
     flags = [f"survivor chosen among {len(live)} copies: {why}"] if len(live) > 1 else []
     if weak:
         flags.append(WEAK_SURVIVOR_FLAG)
 
     if acct["parent_id"] != parent_id and requires_chow(acct):
-        out.append(_chow_proposal(loc, acct, parent_id, parent_name, evidence, confidence, flags))
+        out.append(_chow_proposal(loc, acct, parent_id, parent_name, evidence, confidence, flags, loser_ids))
         return out
 
     changes = _field_changes(loc, acct, parent_id)
@@ -156,7 +163,8 @@ def _proposals_for_match(m: LocationMatch, parent_id: str, parent_name: str) -> 
         fields = {**changes, "note": note}
         out.append(Proposal(
             kind=kind,
-            title=f"{'Re-parent' if kind == 'REPARENT' else 'Update'} '{acct['name']}' → '{loc.name}'",
+            title=f"{'Re-parent' if kind == 'REPARENT' else 'Update'} · {loc.name}",
+            summary=_update_summary(acct, changes, parent_name),
             subject=f"account:{acct['account_id']}",
             operations=[Operation("update", fields, acct["account_id"])],
             before={k: acct[k] for k in changes} | ({"parent_name": acct["parent_name"]} if "parent_id" in changes else {}),
@@ -166,6 +174,7 @@ def _proposals_for_match(m: LocationMatch, parent_id: str, parent_name: str) -> 
             flags=flags,
             location=loc,
             account=acct,
+            related=loser_ids,
         ))
     return out
 
@@ -207,36 +216,45 @@ def _new_account_fields(loc: Location, parent_id: str, note: str) -> dict:
     }
 
 
-def _chow_proposal(loc, acct, parent_id, parent_name, evidence, confidence, flags) -> Proposal:
+def _update_summary(acct: dict, changes: dict, parent_name: str) -> str:
+    parts = []
+    if "parent_id" in changes:
+        parts.append(f"move from {short_parent(acct['parent_name'])} to {short_parent(parent_name)}")
+    if "name" in changes:
+        parts.append(f"rename '{acct['name']}' to '{changes['name']}'")
+    if address := [k.removeprefix("billing_") for k in changes if k.startswith("billing_")]:
+        parts.append(f"fix {', '.join(address)}")
+    parts += [f"set {k} to {changes[k]}" for k in ("status", "care_type") if k in changes]
+    text = "; ".join(parts)
+    return text[:1].upper() + text[1:] + "."
+
+
+def _chow_proposal(loc, acct, parent_id, parent_name, evidence, confidence, flags, related) -> Proposal:
     note = f"EntitySync: created by change of ownership from account {acct['account_id']} ({acct['parent_name']}); source {loc.source_url}"
     new_fields = _new_account_fields(loc, parent_id, note)
     return Proposal(
         kind="CHOW",
-        title=f"CHOW: '{acct['name']}' {acct['parent_name']} → {parent_name} (new account, old preserved)",
+        title=f"CHOW · {loc.name}",
+        summary=(f"Owner changed from {short_parent(acct['parent_name'])} to {short_parent(parent_name)}. "
+                 "The old account has billing history and open AR, so it stays exactly as it is; a new account is "
+                 "created under the new owner and the old one points to it."),
         subject=f"account:{acct['account_id']}",
         operations=[
             Operation("create", new_fields),
             Operation("update", {"chow_current_account": NEW_ACCOUNT_REF}, acct["account_id"]),
         ],
-        before={"old account": {k: acct[k] for k in ("account_id", "name", "parent_name", "chow_current_account")}},
-        after={
-            "old account": {
-                "account_id": acct["account_id"] + " (unchanged)",
-                "name": acct["name"] + " (unchanged)",
-                "parent_name": acct["parent_name"] + " (unchanged)",
-                "chow_current_account": "<new account id>",
-            },
-            "new account": new_fields | {"parent_name": parent_name},
-        },
+        before={"chow_current_account": acct["chow_current_account"]},
+        after={"chow_current_account": "<new account id>", "new account parent": parent_name},
         evidence=evidence + _money_evidence(acct, "CHOW required: billing history AND open AR"),
         confidence=confidence,
-        flags=flags + ["old account is left exactly as is; only chow_current_account is set"],
+        flags=flags,
         location=loc,
         account=acct,
+        related=related,
     )
 
 
-def _duplicate_proposal(loser: Candidate, survivor: Candidate, loc: Location, weak: bool) -> Proposal:
+def _duplicate_proposal(loser: Candidate, survivor: Candidate, loc: Location, weak: bool, why: str) -> Proposal:
     acct, keep = loser.account, survivor.account
     fields = {
         "duplicate_of_account": keep["account_id"],
@@ -245,7 +263,10 @@ def _duplicate_proposal(loser: Candidate, survivor: Candidate, loc: Location, we
     }
     return Proposal(
         kind="DUPLICATE",
-        title=f"Duplicate: '{acct['name']}' [{acct['account_id']}] → keep '{keep['name']}' [{keep['account_id']}]",
+        title=f"Duplicate · {acct['name']}",
+        summary=(f"Same building as '{keep['name']}' [{keep['account_id']}], which is kept ({why}). "
+                 f"This copy [{acct['account_id']}] becomes Inactive and points to the kept one. "
+                 f"The kept account is brought in line with the website ('{loc.name}') by its own proposal if needed."),
         subject=f"account:{acct['account_id']}",
         operations=[Operation("update", fields, acct["account_id"])],
         before={k: acct[k] for k in ("duplicate_of_account", "status", "parent_name")},
@@ -256,6 +277,7 @@ def _duplicate_proposal(loser: Candidate, survivor: Candidate, loc: Location, we
         flags=[WEAK_SURVIVOR_FLAG] if weak else [],
         location=loc,
         account=acct,
+        related=[keep["account_id"]],
     )
 
 
@@ -263,7 +285,8 @@ def _create_proposal(loc: Location, parent_id: str, parent_name: str) -> Proposa
     fields = _new_account_fields(loc, parent_id, f"EntitySync: created from website listing {loc.source_url}")
     return Proposal(
         kind="CREATE",
-        title=f"Create '{loc.name}' ({loc.city}, {loc.state}) under {parent_name}",
+        title=f"Create · {loc.name}",
+        summary=f"Listed on the website in {loc.city}, {loc.state} but has no CRM account. Create it under {short_parent(parent_name)}.",
         subject=f"location:{loc.slug}",
         operations=[Operation("create", fields)],
         before={},
@@ -282,7 +305,9 @@ def _orphan_proposal(acct: dict, parent_name: str) -> Proposal:
     }
     return Proposal(
         kind="NEEDS_REVIEW",
-        title=f"Not on website: '{acct['name']}' ({acct['billing_city']}, {acct['billing_state']})",
+        title=f"Not on website · {acct['name']}",
+        summary=(f"Under {short_parent(parent_name)} in the CRM but not listed on its website. Set status to "
+                 "Needs Review; the parent is not changed and the account is not inactivated on absence alone."),
         subject=f"account:{acct['account_id']}",
         operations=[Operation("update", fields, acct["account_id"])],
         before={"status": acct["status"]},
@@ -301,7 +326,8 @@ def _ambiguous_proposal(loc: Location, live: list[Candidate], why: str, evidence
         for c in live]
     return Proposal(
         kind="NEEDS_REVIEW",
-        title=f"Ambiguous: {len(live)} accounts for '{loc.name}'",
+        title=f"Ambiguous · {loc.name}",
+        summary=f"{len(live)} CRM accounts match this facility and the survivor can't be chosen safely ({why}). Flag all for a human.",
         subject=f"location:{loc.slug}",
         operations=ops,
         before={c.account["account_id"]: c.account["status"] for c in live},

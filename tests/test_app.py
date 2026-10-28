@@ -38,7 +38,8 @@ def page_text(at):
 def test_pending_proposal_is_shown_with_evidence(setup):
     at, _, fake, _ = setup
     text = page_text(at)
-    assert "Re-parent 'Bellhaven Crossings of Lima'" in text
+    assert "Re-parent · Bellhaven of Lima" in text
+    assert "Move from Cedar Trail Communities to Bellhaven Senior Living" in text
     assert "street + ZIP match" in text
     assert "secret-token" not in text
     assert fake.updates == 0 and fake.creates == 0  # viewing never writes
@@ -60,3 +61,35 @@ def test_approve_applies_verifies_and_moves_out_of_pending(setup):
     assert store.get(fp)["status"] == "applied"
     assert fake.accounts["A1"]["parent_id"] == PARENT_ID
     assert at.metric[0].value == "0"  # pending count
+
+
+def render(tmp_path, monkeypatch, locations, accounts):
+    db = tmp_path / "cards.db"
+    ProposalStore(db).save_plan(build_plan(*match_all(locations, accounts, PARENT_ID), PARENT_ID, PARENT_NAME), accounts)
+    monkeypatch.setenv("ENTITYSYNC_DB", str(db))
+    monkeypatch.setenv("CRM_API_TOKEN", "unused")
+    at = AppTest.from_file(str(APP), default_timeout=10).run()
+    assert not at.exception
+    return page_text(at)
+
+
+def test_chow_card_shows_old_and_new_account_in_one_table(tmp_path, monkeypatch):
+    loc = location("Bellhaven of Tiffin", "45 St Lawrence Dr", "Tiffin", zip="44883")
+    old = account("OLD9", "Bellhaven of Tiffin", "45 St Lawrence Dr", "Tiffin", zip="44883",
+                  parent_id=OTHER_PARENT_ID, revenue=84000, ar=12400)
+    text = render(tmp_path, monkeypatch, [loc], [old])
+    assert "CHOW · Bellhaven of Tiffin" in text
+    assert "Old account · stays as it is" in text and "New account · will be created" in text
+    assert "| OLD9 | assigned by the CRM |" in text
+    assert "$84,000" in text and "(unchanged)" not in text
+
+
+def test_duplicate_card_shows_the_kept_copy(tmp_path, monkeypatch):
+    loc = location("Bellhaven of Owosso", "1120 W Main St", "Owosso", "MI", "48867")
+    accounts = [account("KEEP1", "Bellhaven of Owosso", "1120 W Main St", "Owosso", "MI", "48867"),
+                account("DUP2", "Bellhaven of Owosso", "1120 West Main Street", "Owosso", "MI", "48867")]
+    text = render(tmp_path, monkeypatch, [loc], accounts)
+    assert "Duplicate · Bellhaven of Owosso" in text
+    assert "Kept copy (survivor)" in text
+    assert "| account_id | DUP2 | DUP2 | KEEP1 |" in text
+    assert "**KEEP1** ✏️" in text  # duplicate_of_account after

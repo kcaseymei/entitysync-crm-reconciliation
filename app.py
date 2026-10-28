@@ -26,7 +26,7 @@ KIND_HELP = {
     "CREATE": "Facility is on the website but has no CRM account",
     "NEEDS_REVIEW": "Flag for a human: not on the website, or the survivor can't be chosen safely",
 }
-ACCOUNT_FIELDS = ["name", "account_id", "parent_name", "status", "billing_street", "billing_city", "billing_state",
+ACCOUNT_FIELDS = ["account_id", "name", "parent_name", "status", "billing_street", "billing_city", "billing_state",
                   "billing_zip", "care_type", "lifetime_revenue", "outstanding_ar", "chow_current_account",
                   "duplicate_of_account"]
 
@@ -42,25 +42,65 @@ def money(value) -> str:
     return f"${float(value or 0):,.0f}"
 
 
+def cell(field: str, value) -> str:
+    if field in ("lifetime_revenue", "outstanding_ar"):
+        return money(value)
+    text = str(value).strip() if value not in (None, "") else "—"
+    return text.replace("|", "\\|")
+
+
+def changed(text: str) -> str:
+    return f"**{text}** ✏️"
+
+
+def md_table(header: list[str], rows: list[list[str]]) -> None:
+    lines = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
+    lines += ["| " + " | ".join(r) + " |" for r in rows]
+    st.markdown("\n".join(lines))
+
+
 def show_account(acct: dict) -> None:
-    rows = {f: acct.get(f, "") for f in ACCOUNT_FIELDS}
-    rows["lifetime_revenue"], rows["outstanding_ar"] = money(rows["lifetime_revenue"]), money(rows["outstanding_ar"])
-    st.table({"field": list(rows), "value": [str(v) for v in rows.values()]})
+    md_table(["field", "value"], [[f, cell(f, acct.get(f))] for f in ACCOUNT_FIELDS])
 
 
 def show_before_after(before: dict, after: dict) -> None:
-    sections = [k for k in after if isinstance(after[k], dict)]
-    if sections:  # CHOW: one table per account
-        for section in sections:
-            st.markdown(f"**{section}**")
-            show_before_after(before.get(section, {}), after[section])
-        return
     keys = list(dict.fromkeys([*before, *after]))
-    st.table({
-        "field": keys,
-        "before (CRM now)": [str(before.get(k, "—")) for k in keys],
-        "after (proposed)": [str(after.get(k, "—")) for k in keys],
-    })
+    md_table(["field", "before (CRM now)", "after (proposed)"],
+             [[k, cell(k, before.get(k)), changed(cell(k, after.get(k)))] for k in keys])
+
+
+def show_chow(payload: dict) -> None:
+    """One table: the old account (kept for billing) next to the new account (to be created)."""
+    create, link = payload["operations"]
+    old, new = payload["snapshots"][link["account_id"]], create["fields"]
+    new_values = {**new, "account_id": "assigned by the CRM", "parent_name": payload["after"]["new account parent"],
+                  "lifetime_revenue": 0, "outstanding_ar": 0, "chow_current_account": "", "duplicate_of_account": ""}
+    rows = []
+    for f in ACCOUNT_FIELDS:
+        old_cell = cell(f, old.get(f))
+        if f == "chow_current_account":
+            old_cell = f"{old_cell} → " + changed("new account's id")
+        new_cell = cell(f, new_values.get(f))
+        if f == "parent_name":
+            new_cell = changed(new_cell)
+        rows.append([f, old_cell, new_cell])
+    md_table(["field", "Old account · stays as it is (billing history)", "New account · will be created"], rows)
+    st.caption("✏️ marks what changes. On the old account only chow_current_account is set; "
+               "its parent, name, status, revenue and AR stay exactly as they are.")
+
+
+def show_duplicate(payload: dict) -> None:
+    """This copy (now / after) next to the copy that is kept."""
+    [op] = payload["operations"]
+    this = payload["snapshots"][op["account_id"]]
+    kept = next(iter(payload["context"].values()), {})
+    rows = []
+    for f in ACCOUNT_FIELDS:
+        now = cell(f, this.get(f))
+        after = changed(cell(f, op["fields"][f])) if f in op["fields"] else now
+        rows.append([f, now, after, cell(f, kept.get(f))])
+    md_table(["field", "This copy · now", "This copy · after", "Kept copy (survivor) · unchanged here"], rows)
+    st.caption("✏️ marks what changes. Only this copy is updated by this proposal.")
 
 
 def show_result(result: dict | None) -> None:
@@ -86,25 +126,28 @@ def card(p: dict) -> None:
     with st.container(border=True):
         st.markdown(f"#### {p['title']}")
         st.caption(f"{p['kind']} · confidence **{p['confidence']}** · status **{p['status']}** · `{fp}`")
-        st.caption(KIND_HELP.get(p["kind"], ""))
+        st.markdown(payload.get("summary") or KIND_HELP.get(p["kind"], ""))
         for flag in payload["flags"]:
             st.warning(flag)
 
-        left, right = st.columns(2)
-        with left:
-            st.markdown("**Website (source of truth)**")
-            loc = payload["location"]
-            if loc:
-                st.markdown(f"{loc['name']}  \n{loc['street']}, {loc['city']}, {loc['state']} {loc['zip']}  \n"
-                            f"Care: {', '.join(loc['care_offerings'])}  \n[{loc['source_url']}]({loc['source_url']})")
-            else:
-                st.markdown("_Not listed on the website._")
-            st.markdown("**Proposed change**")
-            show_before_after(payload["before"], payload["after"])
-        with right:
-            st.markdown("**CRM account(s) as reviewed**")
-            for acct in payload["snapshots"].values():
-                show_account(acct)
+        loc = payload["location"]
+        st.markdown("**Website (source of truth):** " + (
+            f"{loc['name']} · {loc['street']}, {loc['city']}, {loc['state']} {loc['zip']} · "
+            f"{', '.join(loc['care_offerings'])} · [listing]({loc['source_url']})" if loc else "_not listed_"))
+
+        if p["kind"] == "CHOW":
+            show_chow(payload)
+        elif p["kind"] == "DUPLICATE":
+            show_duplicate(payload)
+        else:
+            left, right = st.columns(2)
+            with left:
+                st.markdown("**Proposed change**")
+                show_before_after(payload["before"], payload["after"])
+            with right:
+                st.markdown("**CRM account(s) as reviewed**")
+                for acct in payload["snapshots"].values():
+                    show_account(acct)
 
         st.markdown("**Evidence**")
         st.markdown("\n".join(f"- {e}" for e in payload["evidence"]))

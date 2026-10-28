@@ -181,6 +181,7 @@ def _payload(p: Proposal, accounts_by_id: dict[str, dict]) -> dict:
     """Everything the reviewer and the applier need, including snapshots of every account the proposal touches."""
     touched = {op.account_id for op in p.operations if op.account_id}
     return {
+        "summary": p.summary,
         "operations": [asdict(op) for op in p.operations],
         "before": p.before,
         "after": p.after,
@@ -188,4 +189,6 @@ def _payload(p: Proposal, accounts_by_id: dict[str, dict]) -> dict:
         "flags": p.flags,
         "location": asdict(p.location) if p.location else None,
         "snapshots": {aid: accounts_by_id[aid] for aid in sorted(touched) if aid in accounts_by_id},
+        # Display-only context (e.g. the survivor of a duplicate); not checked or written by the applier.
+        "context": {aid: accounts_by_id[aid] for aid in p.related if aid in accounts_by_id},
     }
