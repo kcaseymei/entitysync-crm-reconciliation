@@ -35,7 +35,16 @@ ACCOUNT_FIELDS = ["account_id", "name", "parent_name", "status", "billing_street
                   "duplicate_of_account"]
 
 st.set_page_config(page_title="EntitySync Review", page_icon="🔗", layout="wide")
-store = ProposalStore(os.environ.get("ENTITYSYNC_DB", str(DEFAULT_DB_PATH)))
+DB_PATH = os.environ.get("ENTITYSYNC_DB", str(DEFAULT_DB_PATH))
+
+
+def open_store() -> ProposalStore:
+    """A connection for the current thread. Streamlit runs every rerun (and the callbacks before it) in a new
+    thread, and a SQLite connection can't be used from a thread other than the one that opened it."""
+    return ProposalStore(DB_PATH)
+
+
+store = open_store()  # for drawing this run only; callbacks open their own
 
 
 def write_client() -> CRMClient:
@@ -138,21 +147,21 @@ def display_title(p: dict) -> str:
 
 # Button callbacks run before the page is redrawn, so the card already shows its new status.
 def on_approve(fp: str) -> None:
-    result = approve_and_apply(store, write_client(), fp, st.session_state.get(f"reason-{fp}", ""))
+    result = approve_and_apply(open_store(), write_client(), fp, st.session_state.get(f"reason-{fp}", ""))
     st.session_state["flash"] = (fp, "approved", result)
 
 
 def on_reject(fp: str) -> None:
-    reject(store, fp, st.session_state.get(f"reason-{fp}", ""))
+    reject(open_store(), fp, st.session_state.get(f"reason-{fp}", ""))
     st.session_state["flash"] = (fp, "rejected", None)
 
 
 def on_retry(fp: str) -> None:
-    st.session_state["flash"] = (fp, "retried", apply_proposal(store, write_client(), fp))
+    st.session_state["flash"] = (fp, "retried", apply_proposal(open_store(), write_client(), fp))
 
 
 def on_reopen(fp: str) -> None:
-    store.reopen(fp)
+    open_store().reopen(fp)
     st.session_state["flash"] = (fp, "reopened", None)
 
 

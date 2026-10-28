@@ -151,3 +151,39 @@ def test_decided_proposal_in_older_payload_format_still_renders(chow_app):
     at.radio(key="status-filter").set_value("all").run()
     assert not at.exception
     assert "CHOW · Bellhaven of Tiffin" in page_text(at)
+
+
+# ---- threading: Streamlit runs each rerun and its callbacks in a new thread ----------------
+
+def test_a_store_connection_cannot_cross_threads(tmp_path):
+    """The failure mode the callbacks must avoid (AppTest runs single-threaded, so it can't show it)."""
+    import sqlite3
+    import threading
+
+    store = ProposalStore(tmp_path / "t.db")
+    errors = []
+    worker = threading.Thread(target=lambda: errors.append(_try(store.list, sqlite3.ProgrammingError)))
+    worker.start()
+    worker.join()
+    assert errors == [True]
+
+
+def test_button_callbacks_open_their_own_store():
+    """Callbacks run in the next rerun's thread; they must not use the module-level `store` of the previous run."""
+    import ast
+
+    tree = ast.parse(APP.read_text())
+    callbacks = [f for f in tree.body if isinstance(f, ast.FunctionDef) and f.name.startswith("on_")]
+    assert {f.name for f in callbacks} >= {"on_approve", "on_reject", "on_retry", "on_reopen"}
+    for f in callbacks:
+        names = {n.id for n in ast.walk(f) if isinstance(n, ast.Name)}
+        assert "store" not in names, f"{f.name} uses the previous run's store"
+        assert "open_store" in names, f"{f.name} should open its own store"
+
+
+def _try(fn, exc):
+    try:
+        fn()
+    except exc:
+        return True
+    return False
