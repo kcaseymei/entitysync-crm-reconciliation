@@ -1,0 +1,62 @@
+"""Review app tests: run the real Streamlit script headlessly against a temp DB and a fake CRM."""
+from pathlib import Path
+
+import pytest
+from streamlit.testing.v1 import AppTest
+
+from factories import OTHER_PARENT_ID, PARENT_ID, PARENT_NAME, account, location
+from fake_crm import FakeCRM
+from matcher import match_all
+from proposal_store import ProposalStore
+from rules import build_plan
+
+APP = Path(__file__).resolve().parent.parent / "app.py"
+LOC = location("Bellhaven of Lima", "3115 N Cole St", "Lima", zip="45801")
+ACCOUNTS = [account("A1", "Bellhaven Crossings of Lima", "3115 N Cole St", "Lima", zip="45801",
+                    parent_id=OTHER_PARENT_ID, revenue=47000, ar=0)]
+
+
+@pytest.fixture
+def setup(tmp_path, monkeypatch):
+    db = tmp_path / "test.db"
+    store = ProposalStore(db)
+    store.save_plan(build_plan(*match_all([LOC], ACCOUNTS, PARENT_ID), PARENT_ID, PARENT_NAME), ACCOUNTS)
+    fake = FakeCRM(ACCOUNTS)
+    monkeypatch.setenv("ENTITYSYNC_DB", str(db))
+    monkeypatch.setenv("CRM_API_TOKEN", "secret-token-should-never-render")
+    monkeypatch.setattr("crm_client.CRMClient", lambda **kwargs: fake)
+    fp = store.list()[0]["fingerprint"]
+    at = AppTest.from_file(str(APP), default_timeout=10).run()
+    assert not at.exception
+    return at, store, fake, fp
+
+
+def page_text(at):
+    return " ".join(str(e.value) for e in [*at.markdown, *at.caption, *at.warning, *at.success, *at.error])
+
+
+def test_pending_proposal_is_shown_with_evidence(setup):
+    at, _, fake, _ = setup
+    text = page_text(at)
+    assert "Re-parent 'Bellhaven Crossings of Lima'" in text
+    assert "street + ZIP match" in text
+    assert "secret-token" not in text
+    assert fake.updates == 0 and fake.creates == 0  # viewing never writes
+
+
+def test_reject_records_decision_and_writes_nothing(setup):
+    at, store, fake, fp = setup
+    at.text_input(key=f"reason-{fp}").input("not sure about the parent").run()
+    at.button(key=f"reject-{fp}").click().run()
+    assert store.get(fp)["status"] == "rejected"
+    assert store.get(fp)["decision_reason"] == "not sure about the parent"
+    assert fake.updates == 0 and fake.creates == 0
+
+
+def test_approve_applies_verifies_and_moves_out_of_pending(setup):
+    at, store, fake, fp = setup
+    at.button(key=f"approve-{fp}").click().run()
+    assert not at.exception
+    assert store.get(fp)["status"] == "applied"
+    assert fake.accounts["A1"]["parent_id"] == PARENT_ID
+    assert at.metric[0].value == "0"  # pending count

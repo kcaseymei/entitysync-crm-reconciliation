@@ -16,3 +16,6 @@ __pycache__/
 .DS_Store
 .vscode/
 .idea/
+
+# Private learning notes — never commit
+learning/

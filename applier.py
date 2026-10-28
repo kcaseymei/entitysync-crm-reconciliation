@@ -62,6 +62,17 @@ def apply_proposal(store: ProposalStore, client: CRMClient, fp: str) -> dict[str
     return result
 
 
+def approve_and_apply(store: ProposalStore, client: CRMClient, fp: str, reason: str = "") -> dict[str, Any]:
+    """The reviewer's Approve button: record the decision, then apply it."""
+    store.decide(fp, "approved", reason)
+    return apply_proposal(store, client, fp)
+
+
+def reject(store: ProposalStore, fp: str, reason: str = "") -> None:
+    """The reviewer's Reject button: record the decision durably. Nothing is sent to the CRM."""
+    store.decide(fp, "rejected", reason)
+
+
 def _check_preconditions(store, client, fp, ops, snapshots) -> list[str]:
     problems = []
     for step, op in enumerate(ops):

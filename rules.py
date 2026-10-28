@@ -220,7 +220,12 @@ def _chow_proposal(loc, acct, parent_id, parent_name, evidence, confidence, flag
         ],
         before={"old account": {k: acct[k] for k in ("account_id", "name", "parent_name", "chow_current_account")}},
         after={
-            "old account": {"parent_name": acct["parent_name"] + " (unchanged)", "chow_current_account": "<new account id>"},
+            "old account": {
+                "account_id": acct["account_id"] + " (unchanged)",
+                "name": acct["name"] + " (unchanged)",
+                "parent_name": acct["parent_name"] + " (unchanged)",
+                "chow_current_account": "<new account id>",
+            },
             "new account": new_fields | {"parent_name": parent_name},
         },
         evidence=evidence + _money_evidence(acct, "CHOW required: billing history AND open AR"),
