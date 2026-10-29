@@ -4,6 +4,10 @@
 
 > Developed as part of a technical take-home assessment for Clipboard Health, using a fictional senior living operator and a sandbox CRM environment.
 
+**Demo (2.5 min):** reviewing proposals, approving a change of ownership, rejecting one, and checking the result in the CRM.
+
+[![EntitySync demo](https://img.youtube.com/vi/8TruP7GUghI/hqdefault.jpg)](https://youtu.be/8TruP7GUghI)
+
 Senior-care facilities are bought, sold and rebranded all the time, and each change can quietly break the link between a facility and its parent company in the CRM. EntitySync treats the operator's website as the source of truth. It finds every place the CRM disagrees with the website and turns each one into a **proposal**: a planned change with before/after values and evidence. A reviewer approves or rejects each proposal in a small web app. Only approved proposals are written to the CRM, and every write is read back and verified.
 
 ## How it works
@@ -52,7 +56,10 @@ CRM API ──crm_client.py──▶ accounts ──┘   (who is who)  (what to
 - Website: **35** locations from 41 pages (directory says 34, homepage says 35).
 - CRM: **121** accounts at the start, under 6 parent companies (Bellhaven had 29 child accounts).
 - First run: **29 proposals** (9 update, 4 re-parent, 2 CHOW, 7 duplicate, 4 create, 3 not on website) and **12** locations already correct.
-- Second run with no changes: **0 new** proposals. After 23 approved writes: still **0 new**, and every write verified by read-back.
+- Second run with no changes: **0 new** proposals.
+- Review: **28 approved** (8 update, 4 re-parent, 2 CHOW, 7 duplicate, 4 create, 3 needs-review) and **1 rejected** (a website street address that would have overwritten a PO Box billing address). Every approved write was read back and verified. The CRM went from 121 to 127 accounts (4 new facilities, 2 CHOW successor accounts).
+- Final run: **0 new** proposals. 34 of 35 locations already match; the remaining one is the rejected proposal, which is remembered and not re-proposed.
+- `verify_crm.py` on the final CRM: **all 5 checks pass**. Each of the 35 locations has exactly one live account under Bellhaven; both CHOW links point to live successors, and the old accounts kept their parent; all 7 duplicates are Inactive and point to a live account; no unflagged accounts are left under Bellhaven; nothing remains to propose except the rejected one.
 
 ## Setup
 
